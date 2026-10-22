@@ -222,25 +222,19 @@ pub fn button_datagram(func: Function, params: [u32; 4]) -> Vec<u8> {
 }
 
 /// Send a button press to a listening daemon, twice with the same SEQ like a
-/// real device (which resends until it is acknowledged), then wait up to a
-/// second for the acknowledgement: the daemon echoes the datagram back.
-/// Returns whether it was acknowledged.
+/// real device (which always resends once, about two seconds later), then
+/// listen briefly. A real device expects **nothing** back (Brother's daemon
+/// sends nothing, PROTOCOL.md), so the result says whether the daemon wrongly
+/// answered: `Ok(true)` means something came back.
 pub fn send_button(func: Function, host: &str, params: [u32; 4]) -> io::Result<bool> {
     let datagram = button_datagram(func, params);
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     for _ in 0..2 {
         socket.send_to(&datagram, host)?;
     }
-    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    socket.set_read_timeout(Some(Duration::from_millis(400)))?;
     let mut buf = [0u8; 2048];
-    for _ in 0..2 {
-        match socket.recv_from(&mut buf) {
-            Ok((n, _)) if buf[..n] == datagram[..] => return Ok(true),
-            Ok(_) => continue,
-            Err(_) => return Ok(false),
-        }
-    }
-    Ok(false)
+    Ok(socket.recv_from(&mut buf).is_ok())
 }
 
 /// A mock device serving on an ephemeral localhost port in a thread, for
@@ -399,7 +393,7 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let host = listener.local_addr().unwrap().to_string();
-        // a listener that does not echo: delivered twice, not acknowledged
+        // a correct daemon answers nothing: delivered twice, nothing came back
         assert!(!send_button(Function::File, &host, [0; 4]).unwrap());
         let mut buf = [0u8; 512];
         let (n1, _) = listener.recv_from(&mut buf).unwrap();
@@ -410,13 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn send_button_reports_the_daemons_acknowledgement() {
+    fn send_button_reports_a_daemon_that_wrongly_answers() {
         let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
         listener
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let host = listener.local_addr().unwrap().to_string();
-        // a daemon that echoes the event back, like the stock one
+        // a daemon that echoes the event back: not what a device expects
         let echo = std::thread::spawn(move || {
             let mut buf = [0u8; 512];
             let (n, from) = listener.recv_from(&mut buf).unwrap();
