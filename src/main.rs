@@ -15,6 +15,7 @@
 
 use openskey::button;
 use openskey::config::Config;
+use openskey::hold;
 use openskey::registration;
 use openskey::status;
 use std::collections::VecDeque;
@@ -121,7 +122,28 @@ fn selftest_enabled() -> bool {
 
 fn keepalive_loop(cfg: Config) {
     let verify = selftest_enabled();
+    let holds = hold::hold_files_from_env();
+    if !holds.is_empty() {
+        println!(
+            "openskey: registration refresh is held back while any of these is fresh: {}",
+            holds
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     loop {
+        // Never re-register while the host reports a scan in progress: a
+        // refresh during a scan can stall the device's feeder.
+        if let Some(file) = hold::holding(&holds) {
+            println!(
+                "openskey: scan in progress ({}), registration refresh skipped",
+                file.display()
+            );
+            thread::sleep(Duration::from_secs(cfg.keepalive_interval.max(1) as u64));
+            continue;
+        }
         match registration::register_once(&cfg) {
             Ok(()) => {
                 println!("openskey: registered Scan-to-PC for {:?}", cfg.name);
