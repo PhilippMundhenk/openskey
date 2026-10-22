@@ -55,12 +55,19 @@ fn run(args: &[String]) -> i32 {
             }
         }
         return match mock::send_button(func, &host, params) {
-            Ok(()) => {
+            Ok(true) => {
                 println!(
-                    "mock-device: sent {} button to {host} (twice, same SEQ)",
+                    "mock-device: sent {} button to {host} (twice, same SEQ), acknowledged by the daemon",
                     func.name()
                 );
                 0
+            }
+            Ok(false) => {
+                println!(
+                    "mock-device: sent {} button to {host} (twice, same SEQ), NOT acknowledged by the daemon",
+                    func.name()
+                );
+                3
             }
             Err(e) => {
                 eprintln!("mock-device: cannot send the button to {host}: {e}");

@@ -232,6 +232,13 @@ pub fn run_seconds_from(value: Option<String>) -> Option<u64> {
     value.and_then(|v| v.trim().parse().ok()).filter(|&s| s > 0)
 }
 
+/// SKEY_SCAN_DELAY_MS: pause between acknowledging a button event and
+/// starting the scan command, for a model that needs a moment to release the
+/// scanner. Default none.
+pub fn scan_delay_from(value: Option<String>) -> Duration {
+    Duration::from_millis(value.and_then(|v| v.trim().parse().ok()).unwrap_or(0))
+}
+
 /// `openskey status`: the JSON report and the exit code (0 when the device
 /// answered, 2 when it did not or the configuration is unusable).
 pub fn status_report(cfg: &Config) -> (String, i32) {
@@ -481,5 +488,11 @@ mod tests {
         assert_eq!(run_seconds_from(Some("0".into())), None);
         assert_eq!(run_seconds_from(Some("abc".into())), None);
         assert_eq!(run_seconds_from(Some(" 15 ".into())), Some(15));
+        assert_eq!(scan_delay_from(None), Duration::ZERO);
+        assert_eq!(scan_delay_from(Some("x".into())), Duration::ZERO);
+        assert_eq!(
+            scan_delay_from(Some(" 250 ".into())),
+            Duration::from_millis(250)
+        );
     }
 }

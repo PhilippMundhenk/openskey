@@ -137,6 +137,7 @@ fn listen_loop(cfg: &Config, socket: UdpSocket, debug: bool, deadline: Option<In
     if deadline.is_some() {
         let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
     }
+    let scan_delay = daemon::scan_delay_from(std::env::var("SKEY_SCAN_DELAY_MS").ok());
     let mut buf = [0u8; 2048];
     let mut dedup = Dedup::default();
     loop {
@@ -162,10 +163,12 @@ fn listen_loop(cfg: &Config, socket: UdpSocket, debug: bool, deadline: Option<In
         match daemon::classify(&mut dedup, datagram) {
             Decision::Dispatch(ev) => {
                 log_button(&ev, datagram, from.to_string(), debug);
-                dispatch(cfg, ev);
+                acknowledge(&socket, datagram, from);
+                dispatch(cfg, ev, scan_delay);
             }
             Decision::Duplicate(ev) => {
                 log_button(&ev, datagram, from.to_string(), debug);
+                acknowledge(&socket, datagram, from);
                 println!(
                     "openskey: duplicate event (SEQ={}) ignored",
                     ev.seq.unwrap_or(0)
@@ -202,11 +205,27 @@ fn log_button(ev: &ButtonEvent, datagram: &[u8], from: String, debug: bool) {
     }
 }
 
+/// Acknowledge a button event the way the stock daemon does: the datagram is
+/// echoed back to the address it came from. The device resends the event
+/// until it gets this, and holds the scanner for the host that acknowledged
+/// (without it, the scan session that follows is refused).
+fn acknowledge(socket: &UdpSocket, datagram: &[u8], from: std::net::SocketAddr) {
+    match socket.send_to(datagram, from) {
+        Ok(_) => println!("openskey: acknowledged the event to {from}"),
+        Err(e) => eprintln!("openskey: could not acknowledge the event to {from}: {e}"),
+    }
+}
+
 /// Run the scan command in its own thread and wait on it there, so the
-/// listener keeps serving and no zombie is left behind.
-fn dispatch(cfg: &Config, ev: ButtonEvent) {
+/// listener keeps serving and no zombie is left behind. `delay` gives the
+/// device time to release the scanner after the acknowledgement
+/// (SKEY_SCAN_DELAY_MS, default none).
+fn dispatch(cfg: &Config, ev: ButtonEvent, delay: Duration) {
     let cfg = cfg.clone();
     thread::spawn(move || {
+        if !delay.is_zero() {
+            thread::sleep(delay);
+        }
         let func = ev.func.map(|f| f.name()).unwrap_or("?");
         let command = cfg.commands.get(func).cloned().unwrap_or_default();
         println!("openskey: running {command} for {func}");

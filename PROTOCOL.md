@@ -117,9 +117,21 @@ before dispatching on `FUNC` / `APPNUM`.
 or it will scan twice. `openskey` does this.
 
 `openskey` locates the `TYPE=` marker (so the exact header bytes do not matter to
-parsing) and reads `TYPE`, `USER`, `FUNC`, `APPNUM`, `REGID`, `SEQ`. Whether the
-device expects an application-level acknowledgement on 54925 (which would stop
-the resend sooner) is not yet characterised; dedup makes it harmless either way.
+parsing) and reads `TYPE`, `USER`, `FUNC`, `APPNUM`, `P1..P4`, `REGID`, `SEQ`,
+`CLIENT`.
+
+### Acknowledgement (host -> device, UDP, same port)
+
+The host **must acknowledge** the event: the stock daemon sends the datagram
+back unchanged to the address and port it came from (its log calls this
+`udp_sent`). The device resends the event until it gets the acknowledgement,
+and it only hands the scanner to the host that acknowledged: observed on an
+MFC-L2700DW, a daemon that received the event but did not echo it got
+`scanimage: open of device brother4:net1;dev0 failed: Invalid argument` for the
+scan that followed, while scans started from the host (no pending event)
+worked. `openskey` echoes every recognised event, including the resends, and
+then starts the scan command (`SKEY_SCAN_DELAY_MS` can insert a pause between
+the two if a model needs it).
 
 ## 4. The scan
 

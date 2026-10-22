@@ -222,14 +222,25 @@ pub fn button_datagram(func: Function, params: [u32; 4]) -> Vec<u8> {
 }
 
 /// Send a button press to a listening daemon, twice with the same SEQ like a
-/// real device (which resends until the scan starts).
-pub fn send_button(func: Function, host: &str, params: [u32; 4]) -> io::Result<()> {
+/// real device (which resends until it is acknowledged), then wait up to a
+/// second for the acknowledgement: the daemon echoes the datagram back.
+/// Returns whether it was acknowledged.
+pub fn send_button(func: Function, host: &str, params: [u32; 4]) -> io::Result<bool> {
     let datagram = button_datagram(func, params);
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     for _ in 0..2 {
         socket.send_to(&datagram, host)?;
     }
-    Ok(())
+    socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+    let mut buf = [0u8; 2048];
+    for _ in 0..2 {
+        match socket.recv_from(&mut buf) {
+            Ok((n, _)) if buf[..n] == datagram[..] => return Ok(true),
+            Ok(_) => continue,
+            Err(_) => return Ok(false),
+        }
+    }
+    Ok(false)
 }
 
 /// A mock device serving on an ephemeral localhost port in a thread, for
@@ -388,13 +399,31 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .unwrap();
         let host = listener.local_addr().unwrap().to_string();
-        send_button(Function::File, &host, [0; 4]).unwrap();
+        // a listener that does not echo: delivered twice, not acknowledged
+        assert!(!send_button(Function::File, &host, [0; 4]).unwrap());
         let mut buf = [0u8; 512];
         let (n1, _) = listener.recv_from(&mut buf).unwrap();
         let first = buf[..n1].to_vec();
         let (n2, _) = listener.recv_from(&mut buf).unwrap();
         assert_eq!(first, buf[..n2]);
         assert!(button::parse(&first).is_some());
+    }
+
+    #[test]
+    fn send_button_reports_the_daemons_acknowledgement() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let host = listener.local_addr().unwrap().to_string();
+        // a daemon that echoes the event back, like the stock one
+        let echo = std::thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            let (n, from) = listener.recv_from(&mut buf).unwrap();
+            listener.send_to(&buf[..n], from).unwrap();
+        });
+        assert!(send_button(Function::Ocr, &host, [0; 4]).unwrap());
+        echo.join().unwrap();
     }
 
     #[test]
