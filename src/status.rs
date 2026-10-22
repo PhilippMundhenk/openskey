@@ -139,7 +139,7 @@ impl Client {
             ));
         }
         let socket = UdpSocket::bind("0.0.0.0:0")?;
-        socket.set_read_timeout(Some(Duration::from_millis(1500)))?;
+        socket.set_read_timeout(Some(Duration::from_millis(1000)))?;
         Ok(Client {
             socket,
             target: (cfg.device_ip.clone(), cfg.device_port),
@@ -213,10 +213,14 @@ pub fn query(cfg: &Config) -> io::Result<Status> {
         device_ip: cfg.device_ip.clone(),
         ..Status::default()
     };
+    // Reachability first: every SNMP agent answers sysDescr. No answer means
+    // the device is off or unreachable, so do not sit through a timeout for
+    // each of the other objects (a polling client wants a quick "no").
+    let Some(descr) = client.get_text(&OID_SYS_DESCR) else {
+        return Ok(st);
+    };
+    st.model = Some(model_from_sys_descr(&descr));
     st.registered = client.get_text(&REG_OID).map(|t| is_true(&t));
-    st.model = client
-        .get_text(&OID_SYS_DESCR)
-        .map(|t| model_from_sys_descr(&t));
     st.serial = client.get_text(&OID_SERIAL);
     st.firmware = client.get_text(&OID_FIRMWARE);
     st.display = client.get_text(&OID_DISPLAY);
