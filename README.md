@@ -88,6 +88,16 @@ cargo build --release
 cargo test
 ```
 
+`cargo test` runs the unit tests (every module against an in-process mock
+device) and `tests/binaries.rs`, which drives the real `openskey` and
+`mock-device` binaries through the whole flow. CI also measures line coverage
+with [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) and fails
+below 95 %:
+
+```sh
+cargo llvm-cov --workspace --all-targets --fail-under-lines 95
+```
+
 ## Run
 
 Configuration is by environment variable, compatible with the container:
@@ -100,6 +110,9 @@ Configuration is by environment variable, compatible with the container:
 | `KEEPALIVE_INTERVAL`| seconds between re-registrations (< 360)              | `120`     |
 | `SKEY_SELFTEST`     | read the registration back after each refresh        | `true`    |
 | `SKEY_HOLD_FILES`   | colon-separated files; while one exists and is younger than 10 minutes (a scan in progress), the refresh is skipped | none |
+| `SKEY_LISTEN_PORT`  | the button-event port (the device sends to 54925; tests use another) | `54925` |
+| `SKEY_DEBUG`        | log every button datagram in full (hex + ASCII)      | off       |
+| `SKEY_RUN_SECONDS`  | exit normally after this many seconds (captures, tests) | forever |
 | `SKEY_DEVICE_PORT`  | the device's SNMP port (tests use the mock on 1161)  | `161`     |
 | `SKEY_IMAGE` / `SKEY_OCR` / `SKEY_EMAIL` / `SKEY_FILE` | command per function   | container script paths |
 
@@ -136,7 +149,8 @@ IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 ./target/release/openskey status
 ```
 
 The mock answers the registration object with `TRUE` only after it received a
-registration, so `selftest` is meaningful against it.
+registration, so `selftest` is meaningful against it (`--registered` starts it
+registered, `--run-seconds N` stops it after N seconds).
 
 The same `mock-device` agent can decode what the **real** `brscan-skey` sends
 (point it at `127.0.0.1`), for differential testing against this implementation.

@@ -10,23 +10,18 @@
 //! Beyond the original it also exposes the device's status (`openskey status`)
 //! and a registration self-test (`openskey selftest`), see `status.rs`.
 //!
-//! Threads are independent: the keepalive never blocks on a scan, and each scan
-//! runs in its own thread, so a long scan cannot delay re-registration.
+//! The logic lives in the library (`daemon.rs`); this file is the loops:
+//! threads are independent, the keepalive never blocks on a scan, and each
+//! scan runs in its own thread, so a long scan cannot delay re-registration.
 
-use openskey::button;
+use openskey::button::ButtonEvent;
 use openskey::config::Config;
+use openskey::daemon::{self, Decision, Dedup, Keepalive};
 use openskey::hold;
-use openskey::registration;
-use openskey::status;
-use std::collections::VecDeque;
+use std::io;
 use std::net::UdpSocket;
-use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
-
-/// The device resends each button press (same SEQ) until the scan starts; drop
-/// a repeat of the same (REGID, SEQ) seen within this window so it scans once.
-const DEDUP_WINDOW: Duration = Duration::from_secs(20);
 
 const USAGE: &str = "usage: openskey [status|selftest|help]
 
@@ -37,66 +32,63 @@ const USAGE: &str = "usage: openskey [status|selftest|help]
                 (exit 0 registered, 1 not registered, 2 no answer)
 
 Configuration is taken from the environment: NAME, IPADDRESS, HOST_IPADDRESS,
-KEEPALIVE_INTERVAL, SKEY_DEVICE_PORT, SKEY_COMMUNITY, SKEY_SELFTEST,
+KEEPALIVE_INTERVAL, SKEY_DEVICE_PORT, SKEY_LISTEN_PORT, SKEY_COMMUNITY,
+SKEY_SELFTEST, SKEY_HOLD_FILES, SKEY_DEBUG, SKEY_RUN_SECONDS,
 SKEY_IMAGE / SKEY_EMAIL / SKEY_OCR / SKEY_FILE (scan commands).";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    match args.get(1).map(String::as_str) {
+    let code = match args.get(1).map(String::as_str) {
         None => run_daemon(),
-        Some("status") => run_status(),
-        Some("selftest") => run_selftest(),
-        Some("help") | Some("--help") | Some("-h") => println!("{USAGE}"),
+        Some("status") => {
+            let (out, code) = daemon::status_report(&Config::from_env());
+            println!("{out}");
+            code
+        }
+        Some("selftest") => {
+            let (out, code) = daemon::selftest_report(&Config::from_env());
+            println!("{out}");
+            code
+        }
+        Some("help") | Some("--help") | Some("-h") => {
+            println!("{USAGE}");
+            0
+        }
         Some(other) => {
             eprintln!("openskey: unknown command {other:?}\n{USAGE}");
-            std::process::exit(2);
+            2
         }
-    }
+    };
+    std::process::exit(code);
 }
 
-fn run_status() {
+fn run_daemon() -> i32 {
     let cfg = Config::from_env();
-    match status::query(&cfg) {
-        Ok(st) => {
-            println!("{}", st.to_json());
-            if !st.reachable {
-                std::process::exit(2);
-            }
-        }
-        Err(e) => {
-            eprintln!("openskey: status failed: {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn run_selftest() {
-    let cfg = Config::from_env();
-    match status::registered(&cfg) {
-        Ok(Some(true)) => {
-            println!("openskey: selftest OK, device reports a Scan-to-PC registration")
-        }
-        Ok(Some(false)) => {
-            println!("openskey: selftest FAILED, device reports no Scan-to-PC registration");
-            std::process::exit(1);
-        }
-        Ok(None) => {
-            eprintln!("openskey: selftest: no answer from {}", cfg.device_ip);
-            std::process::exit(2);
-        }
-        Err(e) => {
-            eprintln!("openskey: selftest failed: {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
-fn run_daemon() {
-    let cfg = Config::from_env();
+    let run_seconds = daemon::run_seconds_from(std::env::var("SKEY_RUN_SECONDS").ok());
+    let debug = daemon::debug_enabled_from(std::env::var("SKEY_DEBUG").ok());
     println!(
-        "openskey starting: name={:?} device={} host={} listen=:{} keepalive={}s duration={}s",
-        cfg.name, cfg.device_ip, cfg.host_ip, cfg.listen_port, cfg.keepalive_interval, cfg.duration
+        "openskey starting: name={:?} device={}:{} host={} listen=:{} keepalive={}s duration={}s",
+        cfg.name,
+        cfg.device_ip,
+        cfg.device_port,
+        cfg.host_ip,
+        cfg.listen_port,
+        cfg.keepalive_interval,
+        cfg.duration
     );
+    if let Some(seconds) = run_seconds {
+        println!("openskey: will exit after {seconds}s (SKEY_RUN_SECONDS)");
+    }
+
+    // Bind the button port first: a taken port is a configuration error that
+    // should fail before anything is registered.
+    let socket = match UdpSocket::bind(("0.0.0.0", cfg.listen_port)) {
+        Ok(socket) => socket,
+        Err(e) => {
+            eprintln!("openskey: cannot bind UDP :{}: {e}", cfg.listen_port);
+            return 1;
+        }
+    };
 
     // Keepalive thread: register now, then re-register before each lease lapses.
     {
@@ -104,24 +96,17 @@ fn run_daemon() {
         thread::spawn(move || keepalive_loop(cfg));
     }
 
-    // Button listener on 54925.
-    match UdpSocket::bind(("0.0.0.0", cfg.listen_port)) {
-        Ok(socket) => listen_loop(&cfg, socket),
-        Err(e) => {
-            eprintln!("openskey: cannot bind UDP :{}: {e}", cfg.listen_port);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn selftest_enabled() -> bool {
-    std::env::var("SKEY_SELFTEST")
-        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-        .unwrap_or(true)
+    let deadline = run_seconds.map(|s| Instant::now() + Duration::from_secs(s));
+    listen_loop(&cfg, socket, debug, deadline);
+    println!(
+        "openskey: run time of {}s is over, exiting",
+        run_seconds.unwrap_or(0)
+    );
+    0
 }
 
 fn keepalive_loop(cfg: Config) {
-    let verify = selftest_enabled();
+    let verify = daemon::selftest_enabled_from(std::env::var("SKEY_SELFTEST").ok());
     let holds = hold::hold_files_from_env();
     if !holds.is_empty() {
         println!(
@@ -134,173 +119,100 @@ fn keepalive_loop(cfg: Config) {
         );
     }
     loop {
-        // Never re-register while the host reports a scan in progress: a
-        // refresh during a scan can stall the device's feeder.
-        if let Some(file) = hold::holding(&holds) {
-            println!(
-                "openskey: scan in progress ({}), registration refresh skipped",
-                file.display()
-            );
-            thread::sleep(Duration::from_secs(cfg.keepalive_interval.max(1) as u64));
-            continue;
-        }
-        match registration::register_once(&cfg) {
-            Ok(()) => {
-                println!("openskey: registered Scan-to-PC for {:?}", cfg.name);
-                // Self-test: read the registration object back. A device that
-                // accepted us answers TRUE; anything else means the panel will
-                // not show the Scan-to-PC entry, and we say so loudly.
-                if verify {
-                    match status::registered(&cfg) {
-                        Ok(Some(true)) => println!("openskey: registration verified"),
-                        Ok(Some(false)) => {
-                            eprintln!("openskey: WARNING: device reports no registration after we registered")
-                        }
-                        Ok(None) => eprintln!("openskey: registration not verifiable (no answer)"),
-                        Err(e) => eprintln!("openskey: registration check failed: {e}"),
-                    }
-                }
-            }
-            Err(e) => eprintln!("openskey: registration failed: {e}"),
+        let outcome = daemon::keepalive_once(&cfg, verify, &holds);
+        let line = daemon::describe_keepalive(&cfg, &outcome);
+        match outcome {
+            Keepalive::Failed(_) | Keepalive::Registered(Some(false)) => eprintln!("{line}"),
+            _ => println!("{line}"),
         }
         thread::sleep(Duration::from_secs(cfg.keepalive_interval.max(1) as u64));
     }
 }
 
-fn listen_loop(cfg: &Config, socket: UdpSocket) {
+fn listen_loop(cfg: &Config, socket: UdpSocket, debug: bool, deadline: Option<Instant>) {
     println!(
         "openskey: listening for button events on :{}",
         cfg.listen_port
     );
+    if deadline.is_some() {
+        let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
+    }
     let mut buf = [0u8; 2048];
-    let mut recent: VecDeque<((u64, u64), Instant)> = VecDeque::new();
+    let mut dedup = Dedup::default();
     loop {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return;
+        }
         let (n, from) = match socket.recv_from(&mut buf) {
             Ok(v) => v,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue;
+            }
             Err(e) => {
                 eprintln!("openskey: recv error: {e}");
                 continue;
             }
         };
         let datagram = &buf[..n];
-        let header: Vec<String> = datagram[..n.min(4)]
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        // Full-datagram capture: always for unrecognised packets, and for every
-        // packet when SKEY_DEBUG is set. Paste these when characterising a real
-        // scanner's button events (see README "Capturing from a real scanner").
-        let debug = std::env::var("SKEY_DEBUG")
-            .map(|v| v != "0" && !v.is_empty())
-            .unwrap_or(false);
-        match button::parse(datagram) {
-            Some(ev) => {
-                println!(
-                    "openskey: button from {from}: header[{}] FUNC={:?} APPNUM={:?}",
-                    header.join(" "),
-                    ev.func,
-                    ev.appnum
-                );
-                if debug {
-                    println!(
-                        "openskey: CAPTURE {n} bytes from {from}: {}",
-                        hex_dump(datagram)
-                    );
-                }
-                // Deduplicate the device's resends by (REGID, SEQ).
-                if let Some(seq) = ev.seq {
-                    let key = (ev.regid.unwrap_or(0), seq);
-                    let now = Instant::now();
-                    while recent.front().is_some_and(|&(_, t)| now - t > DEDUP_WINDOW) {
-                        recent.pop_front();
-                    }
-                    if recent.iter().any(|&(k, _)| k == key) {
-                        println!("openskey: duplicate event (SEQ={seq}) ignored");
-                        continue;
-                    }
-                    recent.push_back((key, now));
-                }
+        match daemon::classify(&mut dedup, datagram) {
+            Decision::Dispatch(ev) => {
+                log_button(&ev, datagram, from.to_string(), debug);
                 dispatch(cfg, ev);
             }
-            None => {
+            Decision::Duplicate(ev) => {
+                log_button(&ev, datagram, from.to_string(), debug);
+                println!(
+                    "openskey: duplicate event (SEQ={}) ignored",
+                    ev.seq.unwrap_or(0)
+                );
+            }
+            Decision::Unrecognised => {
+                // Always captured in full: this is how another model's event
+                // gets characterised (see README "Capturing from a real scanner").
                 eprintln!("openskey: unrecognised datagram from {from} ({n} bytes)");
                 eprintln!(
                     "openskey: CAPTURE {n} bytes from {from}: {}",
-                    hex_dump(datagram)
+                    daemon::hex_dump(datagram)
                 );
             }
         }
     }
 }
 
-/// Render a datagram as contiguous hex plus a printable-ASCII view, for
-/// capturing a real device's button events.
-fn hex_dump(data: &[u8]) -> String {
-    let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
-    let ascii: String = data
-        .iter()
-        .map(|&b| {
-            if (0x20..0x7f).contains(&b) {
-                b as char
-            } else {
-                '.'
-            }
-        })
-        .collect();
-    format!("{hex} | {ascii}")
+fn log_button(ev: &ButtonEvent, datagram: &[u8], from: String, debug: bool) {
+    println!(
+        "openskey: button from {from}: header[{}] FUNC={:?} APPNUM={:?} P={:?} SEQ={:?}",
+        daemon::header_hex(datagram),
+        ev.func,
+        ev.appnum,
+        ev.params,
+        ev.seq
+    );
+    if debug {
+        println!(
+            "openskey: CAPTURE {} bytes from {from}: {}",
+            datagram.len(),
+            daemon::hex_dump(datagram)
+        );
+    }
 }
 
-fn dispatch(cfg: &Config, ev: button::ButtonEvent) {
-    let Some(func) = ev.func else {
-        eprintln!("openskey: event without a known FUNC, ignored");
-        return;
-    };
-    let Some(command) = cfg.commands.get(func.name()).cloned() else {
-        eprintln!("openskey: no command configured for {}", func.name());
-        return;
-    };
-    let device = "brother4:net1;dev0".to_string(); // the SANE device name scanimage uses
-    let name = cfg.name.clone();
-    let func_name = func.name().to_string();
-    let appnum = ev.appnum.unwrap_or(func.appnum());
-    let event_json = ev.to_json();
-
-    // Run each scan in its own thread and wait on the child there, so the
-    // listener keeps serving and no zombie is left behind. Everything the
-    // device sent is handed to the script in the environment: the raw token
-    // string (SKEY_PARAMS), the per-press option fields P1..P4 (SKEY_P1..4),
-    // REGID/SEQ/CLIENT, and the whole event as JSON (SKEY_EVENT).
+/// Run the scan command in its own thread and wait on it there, so the
+/// listener keeps serving and no zombie is left behind.
+fn dispatch(cfg: &Config, ev: ButtonEvent) {
+    let cfg = cfg.clone();
     thread::spawn(move || {
-        println!("openskey: running {} for {}", command, func_name);
-        let mut child = Command::new("sh");
-        child
-            .arg("-c")
-            .arg(&command)
-            .arg("--") // sh positional params start after this
-            .arg(&device)
-            .arg(&name)
-            .env("SKEY_FUNC", &func_name)
-            .env("SKEY_APPNUM", appnum.to_string())
-            .env("SKEY_PARAMS", &ev.raw)
-            .env("SKEY_EVENT", &event_json);
-        for (i, p) in ev.params.iter().enumerate() {
-            if let Some(v) = p {
-                child.env(format!("SKEY_P{}", i + 1), v.to_string());
-            }
-        }
-        if let Some(r) = ev.regid {
-            child.env("SKEY_REGID", r.to_string());
-        }
-        if let Some(s) = ev.seq {
-            child.env("SKEY_SEQ", s.to_string());
-        }
-        if let Some(c) = &ev.client {
-            child.env("SKEY_CLIENT", c);
-        }
-        let status = child.status();
-        match status {
-            Ok(s) => println!("openskey: {} finished ({s})", func_name),
-            Err(e) => eprintln!("openskey: failed to run {}: {e}", func_name),
+        let func = ev.func.map(|f| f.name()).unwrap_or("?");
+        let command = cfg.commands.get(func).cloned().unwrap_or_default();
+        println!("openskey: running {command} for {func}");
+        match daemon::run_command(&cfg, &ev) {
+            Ok((name, status)) => println!("openskey: {name} finished ({status})"),
+            Err(e) => eprintln!("openskey: {e}"),
         }
     });
 }

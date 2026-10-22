@@ -39,6 +39,29 @@ jobs:
       - name: Release build
         run: cargo build --release --bins
 
+  coverage:
+    name: coverage (fails below 95% of lines)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: Unit, library and binary tests under coverage
+        # the integration test spawns the real binaries; they are instrumented
+        # too and exit normally (time-limited), so their lines count as well
+        run: cargo llvm-cov --workspace --all-targets --fail-under-lines 95 --lcov --output-path lcov.info
+      - name: Per-file summary
+        if: always()
+        run: cargo llvm-cov report --summary-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
   integration:
     name: end-to-end (register, selftest, status, button dispatch)
     runs-on: ubuntu-latest

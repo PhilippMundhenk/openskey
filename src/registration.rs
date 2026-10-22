@@ -125,4 +125,40 @@ mod tests {
             .collect();
         assert_eq!(funcs, vec!["IMAGE", "EMAIL", "OCR", "FILE"]);
     }
+
+    #[test]
+    fn register_once_refuses_missing_addresses() {
+        let mut c = cfg();
+        c.device_ip.clear();
+        let err = register_once(&c).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("IPADDRESS"));
+        let mut c = cfg();
+        c.host_ip.clear();
+        let err = register_once(&c).unwrap_err();
+        assert!(err.to_string().contains("HOST_IPADDRESS"));
+    }
+
+    #[test]
+    fn register_once_reaches_the_mock_device() {
+        let server = crate::mock::MockServer::start(false);
+        let mut c = cfg();
+        c.device_ip = "127.0.0.1".into();
+        c.device_port = server.port;
+        register_once(&c).unwrap();
+        let state = server.stop();
+        assert!(state.registered);
+        assert_eq!(state.requests, 1);
+    }
+
+    #[test]
+    fn register_once_without_an_answer_is_not_an_error() {
+        let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let mut c = cfg();
+        c.device_ip = "127.0.0.1".into();
+        c.device_port = port;
+        register_once(&c).unwrap();
+    }
 }

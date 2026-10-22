@@ -388,4 +388,68 @@ mod tests {
         );
         assert_eq!(msg.varbinds[1].1.as_int(), Some(23205));
     }
+
+    #[test]
+    fn long_lengths_and_negative_integers_roundtrip() {
+        let big = vec![0x41u8; 300];
+        let pkt = message(
+            "internal",
+            TAG_GET_RESPONSE,
+            1,
+            &[varbind(&[1, 3, 6, 1], &octet_string(&big))],
+        );
+        let msg = decode_message(&pkt).unwrap();
+        assert_eq!(msg.varbinds[0].1.as_bytes().unwrap().len(), 300);
+        for value in [-1i64, -129, 255, 65536, i64::MIN / 2] {
+            let encoded = integer(value);
+            let (tag, body, _) = read_tlv(&encoded, 0).unwrap();
+            assert_eq!(tag, TAG_INTEGER);
+            assert_eq!(decode_value(tag, body), Value::Int(value), "{value}");
+        }
+        assert_eq!(decode_value(TAG_INTEGER, &[]), Value::Int(0));
+    }
+
+    #[test]
+    fn value_accessors_and_other_tags() {
+        let other = Value::Other(0x47, vec![1, 2]);
+        assert_eq!(other.as_bytes(), Some(&[1u8, 2][..]));
+        assert_eq!(other.as_text(), None);
+        assert_eq!(other.as_int(), None);
+        assert_eq!(Value::Null.as_bytes(), None);
+        assert_eq!(encode_value(&Value::Null), null());
+        assert_eq!(encode_value(&Value::Oid(vec![1, 3, 6])), oid(&[1, 3, 6]));
+        assert_eq!(encode_value(&other), tlv(0x47, &[1, 2]));
+        assert_eq!(decode_value(0x47, &[9]), Value::Other(0x47, vec![9]));
+        assert_eq!(
+            decode_value(TAG_OID, &[0x2b, 0x06]),
+            Value::Oid(vec![1, 3, 6])
+        );
+        assert_eq!(
+            decode_value(TAG_IP_ADDRESS, &[10, 0, 0, 1])
+                .as_bytes()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert!(decode_oid(&[]).is_empty());
+    }
+
+    #[test]
+    fn malformed_input_decodes_to_nothing() {
+        assert!(decode_message(b"").is_none());
+        assert!(decode_message(b"\x30").is_none());
+        assert!(decode_message(b"\x04\x01x").is_none(), "not a SEQUENCE");
+        assert!(decode_message(b"\x30\x02\x02\x01").is_none(), "truncated");
+        // a message whose PDU lacks the varbind list
+        let pdu = tlv(
+            TAG_GET_REQUEST,
+            &[integer(1), integer(0), integer(0)].concat(),
+        );
+        let msg = sequence(&[integer(0), octet_string(b"c"), pdu].concat());
+        assert!(decode_message(&msg).is_none());
+        // long-form length that claims more than there is
+        assert!(read_tlv(&[0x04, 0x82, 0x01, 0x00, 0x41], 0).is_none());
+        assert!(read_tlv(&[0x04, 0x82], 0).is_none());
+        assert!(extract_string_varbinds(b"junk").is_empty());
+    }
 }
