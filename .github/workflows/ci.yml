@@ -40,7 +40,7 @@ jobs:
         run: cargo build --release --bins
 
   integration:
-    name: end-to-end (register + button dispatch)
+    name: end-to-end (register, selftest, status, button dispatch)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,24 +48,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build binaries
         run: cargo build --release --bins
-      - name: Register against the mock device and dispatch a button
+      - name: Register against the mock device, verify, read the status, dispatch a button
         run: |
           set -euo pipefail
           BIN=target/release
           # Unprivileged SNMP port: the runner is not root and cannot bind 161.
           "$BIN/mock-device" --port 1161 > mock.log 2>&1 &
           sleep 1
-          SKEY_FILE="echo DISPATCHED" IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 HOST_IPADDRESS=127.0.0.1 \
+          export IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161
+
+          # Nothing is registered yet: the self-test must say so (exit 1).
+          if "$BIN/openskey" selftest; then
+            echo 'selftest should fail before a registration'; exit 1
+          fi
+
+          # The daemon registers, verifies its registration, and listens.
+          SKEY_FILE='echo DISPATCHED P1=$SKEY_P1 P4=$SKEY_P4 SEQ=$SKEY_SEQ FUNC=$SKEY_FUNC' HOST_IPADDRESS=127.0.0.1 \
             NAME=CI KEEPALIVE_INTERVAL=2 "$BIN/openskey" > skey.log 2>&1 &
           sleep 2
-          "$BIN/mock-device" --button FILE
+
+          # Self-test from a separate process: the device now lists us.
+          "$BIN/openskey" selftest | tee selftest.log
+          grep -q 'selftest OK' selftest.log
+
+          # Status: scanner objects only, as the mock (a mirror of a real
+          # MFC-L2700DW) answers them.
+          "$BIN/openskey" status | tee status.json
+          grep -q '"reachable":true' status.json
+          grep -q '"registered":true' status.json
+          grep -q '"model":"MFC-L2700DW"' status.json
+          grep -q '"serial":"E73941F6N621420"' status.json
+          grep -q '"firmware":"Y2309112149"' status.json
+          grep -q '"display":"Scan:' status.json
+          grep -q '"net_scanner_supported":true' status.json
+          grep -q '"scan_key_supported":true' status.json
+          grep -q '"scan_key_enabled":true' status.json
+          # this is a scanner tool: no printer objects
+          if grep -qiE 'toner|drum|page' status.json; then
+            echo 'printer objects in the scanner status'; exit 1
+          fi
+
+          # A button press with non-default P1..P4 reaches the script.
+          "$BIN/mock-device" --button FILE --params 3,1,0,2
           sleep 2
           echo '--- mock-device ---'; cat mock.log
           echo '--- openskey ---'; cat skey.log
           grep -q 'registration from' mock.log
           grep -q 'FUNC=IMAGE' mock.log
+          grep -q 'registration verified' skey.log
           grep -q 'button from' skey.log
-          grep -q 'DISPATCHED' skey.log
+          grep -q 'DISPATCHED P1=3 P4=2 SEQ=56 FUNC=FILE' skey.log
           # the button is sent twice (same SEQ): dispatch exactly once, dedup the rest
           test "$(grep -c 'FILE finished' skey.log)" = "1"
           grep -q 'duplicate event' skey.log

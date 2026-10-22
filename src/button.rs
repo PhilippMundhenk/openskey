@@ -6,6 +6,7 @@
 //! header bytes) and read the fields we care about. See PROTOCOL.md.
 
 use crate::config::Function;
+use crate::status::json_string;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ButtonEvent {
@@ -13,15 +14,58 @@ pub struct ButtonEvent {
     pub user: String,
     pub func: Option<Function>,
     pub appnum: Option<u32>,
+    /// `P1`..`P4`: the per-press option fields. The device fills them from
+    /// the shortcut that was pressed; `0` is "default". An MFC-L2700DW sends
+    /// all zeros (the stock daemon never decodes them either; the panel scan
+    /// options a model may offer are read by the scan backend over TCP
+    /// 54921). They are passed through so a script can use them if a model
+    /// populates them.
+    pub params: [Option<u32>; 4],
     /// `REGID` from the event: a registration id the device assigns, distinct
     /// per function.
     pub regid: Option<u64>,
     /// `SEQ` from the event: a per-press sequence number. The device sends each
     /// press more than once with the same SEQ, so it is the deduplication key.
     pub seq: Option<u64>,
-    /// The full token string (incl. P1..P4 scan options), passed through to the
-    /// scan command, mirroring how brscan-skey hands the parameters on.
+    /// `CLIENT`: the address of the registered host as the device sees it;
+    /// present in the stock daemon's own sample event, not in every capture.
+    pub client: Option<String>,
+    /// The full token string, passed through to the scan command, mirroring
+    /// how brscan-skey hands the parameters on.
     pub raw: String,
+}
+
+impl ButtonEvent {
+    /// The event as a JSON object, for scripts (SKEY_EVENT) and logs.
+    pub fn to_json(&self) -> String {
+        fn opt_u<T: ToString>(v: &Option<T>) -> String {
+            v.as_ref().map(|x| x.to_string()).unwrap_or("null".into())
+        }
+        format!(
+            concat!(
+                "{{\"type\":{},\"user\":{},\"func\":{},\"appnum\":{},",
+                "\"p1\":{},\"p2\":{},\"p3\":{},\"p4\":{},",
+                "\"regid\":{},\"seq\":{},\"client\":{},\"raw\":{}}}"
+            ),
+            json_string(&self.type_field),
+            json_string(&self.user),
+            self.func
+                .map(|f| json_string(f.name()))
+                .unwrap_or("null".into()),
+            opt_u(&self.appnum),
+            opt_u(&self.params[0]),
+            opt_u(&self.params[1]),
+            opt_u(&self.params[2]),
+            opt_u(&self.params[3]),
+            opt_u(&self.regid),
+            opt_u(&self.seq),
+            self.client
+                .as_ref()
+                .map(|c| json_string(c))
+                .unwrap_or("null".into()),
+            json_string(&self.raw),
+        )
+    }
 }
 
 /// Parse a raw 54925 datagram. Returns None if it does not contain a token
@@ -37,8 +81,10 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
     let mut user = String::new();
     let mut func = None;
     let mut appnum = None;
+    let mut params = [None; 4];
     let mut regid = None;
     let mut seq = None;
+    let mut client = None;
 
     for token in body.split(';') {
         let Some((key, value)) = token.split_once('=') else {
@@ -50,8 +96,13 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
             "USER" => user = value.to_string(),
             "FUNC" => func = Function::from_name(value),
             "APPNUM" => appnum = value.parse().ok(),
+            "P1" => params[0] = value.parse().ok(),
+            "P2" => params[1] = value.parse().ok(),
+            "P3" => params[2] = value.parse().ok(),
+            "P4" => params[3] = value.parse().ok(),
             "REGID" => regid = value.parse().ok(),
             "SEQ" => seq = value.parse().ok(),
+            "CLIENT" => client = Some(value.to_string()).filter(|v| !v.is_empty()),
             _ => {}
         }
     }
@@ -64,8 +115,10 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
         user,
         func,
         appnum,
+        params,
         regid,
         seq,
+        client,
         raw: body,
     })
 }
@@ -86,6 +139,8 @@ mod tests {
         assert_eq!(ev.user, "NAS");
         assert_eq!(ev.func, Some(Function::File));
         assert_eq!(ev.appnum, Some(5));
+        assert_eq!(ev.params, [None; 4]);
+        assert_eq!(ev.client, None);
     }
 
     #[test]
@@ -110,8 +165,34 @@ mod tests {
         assert_eq!(ev.user, "openskey");
         assert_eq!(ev.func, Some(Function::File));
         assert_eq!(ev.appnum, Some(5));
+        assert_eq!(ev.params, [Some(0), Some(0), Some(0), Some(0)]);
         assert_eq!(ev.regid, Some(60614));
         assert_eq!(ev.seq, Some(56));
+    }
+
+    #[test]
+    fn parses_the_stock_daemons_sample_event_with_client() {
+        // The sample event embedded in Brother's own brscan-skey binary: it
+        // ends in an empty token (";;") and a CLIENT field.
+        let dg = b"t0TYPE=BR;BUTTON=SCAN;USER=\"idevd101\";FUNC=IMAGE;HOST=10.136.150.6:54925;APPNUM=1;P1=0;P2=0;P3=0;P4=0;REGID=756;SEQ=1;;CLIENT=10.136.41.234";
+        let ev = parse(dg).expect("should parse");
+        assert_eq!(ev.user, "idevd101");
+        assert_eq!(ev.func, Some(Function::Image));
+        assert_eq!(ev.regid, Some(756));
+        assert_eq!(ev.seq, Some(1));
+        assert_eq!(ev.client.as_deref(), Some("10.136.41.234"));
+    }
+
+    #[test]
+    fn parses_non_default_params() {
+        let dg = b"\x02\x00\x50\x30TYPE=BR;USER=\"x\";FUNC=OCR;APPNUM=3;P1=3;P2=1;P3=0;P4=2;REGID=1;SEQ=9;";
+        let ev = parse(dg).expect("should parse");
+        assert_eq!(ev.params, [Some(3), Some(1), Some(0), Some(2)]);
+        let json = ev.to_json();
+        assert!(json.contains("\"func\":\"OCR\""));
+        assert!(json.contains("\"p1\":3,\"p2\":1,\"p3\":0,\"p4\":2"));
+        assert!(json.contains("\"regid\":1,\"seq\":9,\"client\":null"));
+        assert!(json.contains("\"user\":\"x\""));
     }
 
     #[test]
