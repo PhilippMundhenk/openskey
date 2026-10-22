@@ -66,14 +66,23 @@ fn agent(port: u16) {
 
 fn send_button(func: &str, host: &str) {
     let func = Function::from_name(func).unwrap_or(Function::File);
-    let mut datagram = vec![0x00, 0x1b, 0x00, 0x71]; // placeholder 4-byte header
     let body = format!(
-        "TYPE=BR;BUTTON=SCAN;USER=\"Scanner\";FUNC={};HOST=127.0.0.1:54925;APPNUM={};DURATION=360;BRID=;",
+        "TYPE=BR;BUTTON=SCAN;USER=\"Scanner\";FUNC={};HOST=127.0.0.1:54925;APPNUM={};P1=0;P2=0;P3=0;P4=0;REGID=60614;SEQ=56;",
         func.name(),
         func.appnum()
     );
+    // 4-byte header `02 00 LL 30`, LL = datagram length + 1, as a real device sends.
+    let ll = (4 + body.len() + 1) as u8;
+    let mut datagram = vec![0x02, 0x00, ll, 0x30];
     datagram.extend_from_slice(body.as_bytes());
+
     let socket = UdpSocket::bind("0.0.0.0:0").expect("bind");
-    socket.send_to(&datagram, host).expect("send button");
-    println!("mock-device: sent {} button to {host}", func.name());
+    // The device resends the same SEQ; send twice so dedup is exercised.
+    for _ in 0..2 {
+        socket.send_to(&datagram, host).expect("send button");
+    }
+    println!(
+        "mock-device: sent {} button to {host} (twice, same SEQ)",
+        func.name()
+    );
 }

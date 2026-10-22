@@ -12,10 +12,15 @@
 use openskey::button;
 use openskey::config::Config;
 use openskey::registration;
+use std::collections::VecDeque;
 use std::net::UdpSocket;
 use std::process::Command;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// The device resends each button press (same SEQ) until the scan starts; drop
+/// a repeat of the same (REGID, SEQ) seen within this window so it scans once.
+const DEDUP_WINDOW: Duration = Duration::from_secs(20);
 
 fn main() {
     let cfg = Config::from_env();
@@ -56,6 +61,7 @@ fn listen_loop(cfg: &Config, socket: UdpSocket) {
         cfg.listen_port
     );
     let mut buf = [0u8; 2048];
+    let mut recent: VecDeque<((u64, u64), Instant)> = VecDeque::new();
     loop {
         let (n, from) = match socket.recv_from(&mut buf) {
             Ok(v) => v,
@@ -88,6 +94,19 @@ fn listen_loop(cfg: &Config, socket: UdpSocket) {
                         "openskey: CAPTURE {n} bytes from {from}: {}",
                         hex_dump(datagram)
                     );
+                }
+                // Deduplicate the device's resends by (REGID, SEQ).
+                if let Some(seq) = ev.seq {
+                    let key = (ev.regid.unwrap_or(0), seq);
+                    let now = Instant::now();
+                    while recent.front().is_some_and(|&(_, t)| now - t > DEDUP_WINDOW) {
+                        recent.pop_front();
+                    }
+                    if recent.iter().any(|&(k, _)| k == key) {
+                        println!("openskey: duplicate event (SEQ={seq}) ignored");
+                        continue;
+                    }
+                    recent.push_back((key, now));
                 }
                 dispatch(cfg, ev);
             }

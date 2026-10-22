@@ -66,4 +66,7 @@ jobs:
           grep -q 'FUNC=IMAGE' mock.log
           grep -q 'button from' skey.log
           grep -q 'DISPATCHED' skey.log
+          # the button is sent twice (same SEQ): dispatch exactly once, dedup the rest
+          test "$(grep -c 'FILE finished' skey.log)" = "1"
+          grep -q 'duplicate event' skey.log
           echo 'end-to-end OK'

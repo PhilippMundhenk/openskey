@@ -13,8 +13,14 @@ pub struct ButtonEvent {
     pub user: String,
     pub func: Option<Function>,
     pub appnum: Option<u32>,
-    /// The scan parameters the device included (everything after FUNC), passed
-    /// through to the scan command, mirroring how brscan-skey hands them on.
+    /// `REGID` from the event: a registration id the device assigns, distinct
+    /// per function.
+    pub regid: Option<u64>,
+    /// `SEQ` from the event: a per-press sequence number. The device sends each
+    /// press more than once with the same SEQ, so it is the deduplication key.
+    pub seq: Option<u64>,
+    /// The full token string (incl. P1..P4 scan options), passed through to the
+    /// scan command, mirroring how brscan-skey hands the parameters on.
     pub raw: String,
 }
 
@@ -31,6 +37,8 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
     let mut user = String::new();
     let mut func = None;
     let mut appnum = None;
+    let mut regid = None;
+    let mut seq = None;
 
     for token in body.split(';') {
         let Some((key, value)) = token.split_once('=') else {
@@ -42,6 +50,8 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
             "USER" => user = value.to_string(),
             "FUNC" => func = Function::from_name(value),
             "APPNUM" => appnum = value.parse().ok(),
+            "REGID" => regid = value.parse().ok(),
+            "SEQ" => seq = value.parse().ok(),
             _ => {}
         }
     }
@@ -54,6 +64,8 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
         user,
         func,
         appnum,
+        regid,
+        seq,
         raw: body,
     })
 }
@@ -82,6 +94,24 @@ mod tests {
         let ev = parse(dg).expect("should parse");
         assert_eq!(ev.func, Some(Function::Image));
         assert!(ev.raw.contains("R=300"));
+    }
+
+    #[test]
+    fn parses_real_capture_from_a_scanner() {
+        // Exact bytes captured from an MFC's "Scan to File" button (header
+        // 02 00 7c 30 then the token string, including P1..P4/REGID/SEQ).
+        let hex = "02007c30545950453d42523b425554544f4e3d5343414e3b555345523d226f70656e736b6579223b46554e433d46494c453b484f53543d3139322e3136382e34342e35383a35343932353b4150504e554d3d353b50313d303b50323d303b50333d303b50343d303b52454749443d36303631343b5345513d35363b";
+        let dg: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect();
+        let ev = parse(&dg).expect("should parse");
+        assert_eq!(ev.type_field, "BR");
+        assert_eq!(ev.user, "openskey");
+        assert_eq!(ev.func, Some(Function::File));
+        assert_eq!(ev.appnum, Some(5));
+        assert_eq!(ev.regid, Some(60614));
+        assert_eq!(ev.seq, Some(56));
     }
 
     #[test]

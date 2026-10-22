@@ -78,24 +78,37 @@ These are not required to register; they identify the device.
 
 ## 3. Button event (device -> host, UDP to port 54925)
 
-When the user selects a Scan-to-PC function on the panel, the device sends a
-single UDP datagram (~113–114 bytes observed) to `HOST:54925`. It is a short
-binary header followed by an ASCII token string in the same shape as the
-registration. `brscan-skey` parses it with `TYPE=`, `USER=`, `HOST=`, `CLIENT=`,
-`FUNC=` / `APPNUM=` markers, and:
+When the user selects a Scan-to-PC function on the panel, the device sends a UDP
+datagram (~122–124 bytes) to `HOST:54925`. Confirmed against a live MFC. It is a
+4-byte header followed by an ASCII token string:
 
-- checks `TYPE` is `BR`,
-- checks `USER` matches the registered PC user,
-- checks `HOST` resolves to this host's address (`decode_key_data IP mismatch`
-  otherwise),
-- dispatches on `FUNC` / `APPNUM` to the matching command, passing the scan
-  parameters through.
+```
+02 00 LL 30  TYPE=BR;BUTTON=SCAN;USER="<name>";FUNC=FILE;HOST=<host-ip>:54925;APPNUM=5;P1=0;P2=0;P3=0;P4=0;REGID=60614;SEQ=56;
+```
 
-`openskey` locates the `TYPE=` marker (tolerating the exact header bytes, which
-are not yet fully characterised) and reads `TYPE`, `USER`, `FUNC`, `APPNUM`. The
-precise header and the full set of scan parameters in the event are the next
-item to pin down, by capturing a real event against the `mock-device` or a live
-device (see README).
+Header: bytes 0, 1, 3 are constant `02 00 .. 30`; byte 2 (`LL`) is the datagram
+length + 1 (e.g. a 123-byte datagram has `LL = 0x7c = 124`).
+
+Token string fields (the first four match the registration):
+
+- `TYPE=BR`, `BUTTON=SCAN`, `USER` (the registered PC name), `FUNC` / `APPNUM`
+  (which function was pressed), `HOST` (echoes our registered host).
+- `P1..P4` — per-button scan options chosen on the panel; `0` is the default.
+- `REGID` — a registration id the device assigns, distinct per function.
+- `SEQ` — a sequence number, one per press.
+
+The stock `brscan-skey` additionally checks `USER` matches the registered user
+and `HOST` resolves to this host (`decode_key_data IP mismatch` otherwise)
+before dispatching on `FUNC` / `APPNUM`.
+
+**The device sends each press more than once** (observed: twice, ~2 s apart, same
+`SEQ`) until the scan starts, so the receiver must deduplicate by `(REGID, SEQ)`
+or it will scan twice. `openskey` does this.
+
+`openskey` locates the `TYPE=` marker (so the exact header bytes do not matter to
+parsing) and reads `TYPE`, `USER`, `FUNC`, `APPNUM`, `REGID`, `SEQ`. Whether the
+device expects an application-level acknowledgement on 54925 (which would stop
+the resend sooner) is not yet characterised; dedup makes it harmless either way.
 
 ## 4. The scan
 
