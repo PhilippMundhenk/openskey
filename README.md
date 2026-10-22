@@ -17,7 +17,16 @@ socket leak and with a documented, testable protocol.
 
 ## Why
 
-The stock `brscan-skey` daemon leaks one UDP socket on every registration cycle
+**Brother does not support its Linux drivers.** They are shipped as
+closed-source, binary-only packages, and when asked for help with a defect in
+`brscan-skey`, Brother's support declined and advised fixing it yourself. The
+driver license does, however, explicitly allow modifying and preparing
+derivative works. This project takes Brother up on that: an open, documented,
+maintainable implementation of the Scan-to-PC protocol that anyone can inspect,
+test and fix, because the vendor will not.
+
+The immediate trigger was a concrete bug the closed daemon cannot shed. The
+stock `brscan-skey` daemon leaks one UDP socket on every registration cycle
 (its firmware probe never closes it). With a keepalive re-registering every two
 minutes it reaches its open-file limit in a few days, then logs `Too many open
 files` and silently stops handling buttons and re-registering, so the Scan-to-PC
@@ -93,4 +102,4 @@ The same `mock-device` agent can decode what the **real** `brscan-skey` sends
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0, at your option.
+MIT. See [LICENSE](LICENSE).

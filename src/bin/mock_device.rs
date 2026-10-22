@@ -47,7 +47,11 @@ fn agent(port: u16) {
         }
         println!("mock-device: registration from {from}:");
         for (oid, value) in &bindings {
-            let oid_s = oid.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(".");
+            let oid_s = oid
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(".");
             println!("    {oid_s} = {value}");
         }
         // Echo a get-response with the same bindings so the client sees an ACK.

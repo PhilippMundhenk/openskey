@@ -3,8 +3,8 @@ name = "openskey"
 version = "0.1.0"
 edition = "2021"
 description = "An open, leak-free reimplementation of Brother's brscan-skey Scan-to-PC key daemon"
-license = "MIT OR Apache-2.0"
-repository = ""
+license = "MIT"
+repository = "https://github.com/PhilippMundhenk/openskey"
 readme = "README.md"
 
 # Zero runtime dependencies on purpose: the whole SNMPv1/BER encoding and the

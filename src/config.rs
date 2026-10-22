@@ -33,7 +33,12 @@ impl Function {
     }
 
     pub fn all() -> [Function; 4] {
-        [Function::Image, Function::Email, Function::Ocr, Function::File]
+        [
+            Function::Image,
+            Function::Email,
+            Function::Ocr,
+            Function::File,
+        ]
     }
 
     pub fn from_name(s: &str) -> Option<Function> {
@@ -71,7 +76,10 @@ pub struct Config {
 }
 
 fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| default.to_string())
+    std::env::var(key)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 impl Config {
@@ -85,10 +93,19 @@ impl Config {
         // Per-function commands. Defaults match the container's script layout.
         let base = "python3 /opt/brother/scanner/brscan-skey/script";
         let mut commands = BTreeMap::new();
-        commands.insert("IMAGE", env_or("SKEY_IMAGE", &format!("{base}/scantoimage.py")));
+        commands.insert(
+            "IMAGE",
+            env_or("SKEY_IMAGE", &format!("{base}/scantoimage.py")),
+        );
         commands.insert("OCR", env_or("SKEY_OCR", &format!("{base}/scantoocr.py")));
-        commands.insert("EMAIL", env_or("SKEY_EMAIL", &format!("{base}/scantoemail.py")));
-        commands.insert("FILE", env_or("SKEY_FILE", &format!("{base}/scantofile.py")));
+        commands.insert(
+            "EMAIL",
+            env_or("SKEY_EMAIL", &format!("{base}/scantoemail.py")),
+        );
+        commands.insert(
+            "FILE",
+            env_or("SKEY_FILE", &format!("{base}/scantofile.py")),
+        );
 
         Config {
             name,

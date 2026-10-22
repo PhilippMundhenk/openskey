@@ -33,7 +33,9 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
     let mut appnum = None;
 
     for token in body.split(';') {
-        let Some((key, value)) = token.split_once('=') else { continue };
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
         let value = value.trim().trim_matches('"');
         match key.trim() {
             "TYPE" => type_field = value.to_string(),
@@ -47,7 +49,13 @@ pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
     if type_field.is_empty() {
         return None;
     }
-    Some(ButtonEvent { type_field, user, func, appnum, raw: body })
+    Some(ButtonEvent {
+        type_field,
+        user,
+        func,
+        appnum,
+        raw: body,
+    })
 }
 
 #[cfg(test)]

@@ -49,12 +49,18 @@ pub fn build_registration(cfg: &Config) -> Vec<u8> {
 /// answers.
 pub fn register_once(cfg: &Config) -> io::Result<()> {
     if cfg.device_ip.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "IPADDRESS is not set"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "IPADDRESS is not set",
+        ));
     }
     if cfg.host_ip.is_empty() {
         // The device would get HOST=:54925 and have nowhere to send button
         // events (the silent-buttons case in issue #10). Refuse loudly.
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "HOST_IPADDRESS is not set; the device could not reach us"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "HOST_IPADDRESS is not set; the device could not reach us",
+        ));
     }
     let packet = build_registration(cfg);
     let socket = UdpSocket::bind("0.0.0.0:0")?;

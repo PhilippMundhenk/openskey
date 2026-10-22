@@ -43,7 +43,9 @@ pub fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
 pub fn integer(value: i64) -> Vec<u8> {
     // Minimal two's-complement big-endian, keeping a leading sign byte correct.
     let mut bytes = value.to_be_bytes().to_vec();
-    while bytes.len() > 1 && ((bytes[0] == 0 && bytes[1] & 0x80 == 0) || (bytes[0] == 0xff && bytes[1] & 0x80 != 0)) {
+    while bytes.len() > 1
+        && ((bytes[0] == 0 && bytes[1] & 0x80 == 0) || (bytes[0] == 0xff && bytes[1] & 0x80 != 0))
+    {
         bytes.remove(0);
     }
     tlv(TAG_INTEGER, &bytes)
@@ -164,24 +166,43 @@ pub fn decode_oid(body: &[u8]) -> Vec<u32> {
 pub fn extract_string_varbinds(data: &[u8]) -> Vec<(Vec<u32>, String)> {
     let mut out = Vec::new();
     // message SEQUENCE
-    let Some((TAG_SEQUENCE, msg, _)) = read_tlv(data, 0) else { return out };
+    let Some((TAG_SEQUENCE, msg, _)) = read_tlv(data, 0) else {
+        return out;
+    };
     // version INTEGER
-    let Some((_, _, p1)) = read_tlv(msg, 0) else { return out };
+    let Some((_, _, p1)) = read_tlv(msg, 0) else {
+        return out;
+    };
     // community OCTET STRING
-    let Some((_, _, p2)) = read_tlv(msg, p1) else { return out };
+    let Some((_, _, p2)) = read_tlv(msg, p1) else {
+        return out;
+    };
     // pdu (context tag)
-    let Some((_pdu_tag, pdu, _)) = read_tlv(msg, p2) else { return out };
+    let Some((_pdu_tag, pdu, _)) = read_tlv(msg, p2) else {
+        return out;
+    };
     // request-id, error-status, error-index, then varbind-list SEQUENCE
-    let Some((_, _, q1)) = read_tlv(pdu, 0) else { return out };
-    let Some((_, _, q2)) = read_tlv(pdu, q1) else { return out };
-    let Some((_, _, q3)) = read_tlv(pdu, q2) else { return out };
-    let Some((TAG_SEQUENCE, vblist, _)) = read_tlv(pdu, q3) else { return out };
+    let Some((_, _, q1)) = read_tlv(pdu, 0) else {
+        return out;
+    };
+    let Some((_, _, q2)) = read_tlv(pdu, q1) else {
+        return out;
+    };
+    let Some((_, _, q3)) = read_tlv(pdu, q2) else {
+        return out;
+    };
+    let Some((TAG_SEQUENCE, vblist, _)) = read_tlv(pdu, q3) else {
+        return out;
+    };
     let mut pos = 0;
     while let Some((TAG_SEQUENCE, vb, next)) = read_tlv(vblist, pos) {
         pos = next;
         if let Some((TAG_OID, oid_body, after_oid)) = read_tlv(vb, 0) {
             if let Some((TAG_OCTET_STRING, val, _)) = read_tlv(vb, after_oid) {
-                out.push((decode_oid(oid_body), String::from_utf8_lossy(val).into_owned()));
+                out.push((
+                    decode_oid(oid_body),
+                    String::from_utf8_lossy(val).into_owned(),
+                ));
             }
         }
     }

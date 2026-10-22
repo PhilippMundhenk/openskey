@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: fmt, clippy, test, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable) with rustfmt and clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit and integration tests
+        run: cargo test --all
+
+      - name: Release build
+        run: cargo build --release --bins
+
+  integration:
+    name: end-to-end (register + button dispatch)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build binaries
+        run: cargo build --release --bins
+      - name: Register against the mock device and dispatch a button
+        run: |
+          set -euo pipefail
+          BIN=target/release
+          "$BIN/mock-device" > mock.log 2>&1 &
+          sleep 1
+          SKEY_FILE="echo DISPATCHED" IPADDRESS=127.0.0.1 HOST_IPADDRESS=127.0.0.1 \
+            NAME=CI KEEPALIVE_INTERVAL=2 "$BIN/openskey" > skey.log 2>&1 &
+          sleep 2
+          "$BIN/mock-device" --button FILE
+          sleep 2
+          echo '--- mock-device ---'; cat mock.log
+          echo '--- openskey ---'; cat skey.log
+          grep -q 'registration from' mock.log
+          grep -q 'FUNC=IMAGE' mock.log
+          grep -q 'button from' skey.log
+          grep -q 'DISPATCHED' skey.log
+          echo 'end-to-end OK'

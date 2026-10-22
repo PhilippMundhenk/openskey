@@ -51,7 +51,10 @@ fn keepalive_loop(cfg: Config) {
 }
 
 fn listen_loop(cfg: &Config, socket: UdpSocket) {
-    println!("openskey: listening for button events on :{}", cfg.listen_port);
+    println!(
+        "openskey: listening for button events on :{}",
+        cfg.listen_port
+    );
     let mut buf = [0u8; 2048];
     loop {
         let (n, from) = match socket.recv_from(&mut buf) {
