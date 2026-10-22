@@ -35,10 +35,12 @@ preparing derivative works. This file records the wire format only.
 
 ```
 TYPE=BR;BUTTON=SCAN;USER="<name>";FUNC=IMAGE;HOST=<host-ip>:54925;APPNUM=1;DURATION=360;BRID=;
-TYPE=BR;BUTTON=SCAN;USER="<name>";FUNC=EMAIL;HOST=<host-ip>:54925;APPNUM=2;DURATION=360;BRID=;
 TYPE=BR;BUTTON=SCAN;USER="<name>";FUNC=OCR;HOST=<host-ip>:54925;APPNUM=3;DURATION=360;BRID=;
+TYPE=BR;BUTTON=SCAN;USER="<name>";FUNC=EMAIL;HOST=<host-ip>:54925;APPNUM=2;DURATION=360;BRID=;
 TYPE=BR;BUTTON=SCAN;USER="<name>";FUNC=FILE;HOST=<host-ip>:54925;APPNUM=5;DURATION=360;BRID=;
 ```
+
+(in this order: IMAGE, OCR, EMAIL, FILE, as the stock daemon sends them.)
 
 Fields:
 
@@ -120,18 +122,32 @@ or it will scan twice. `openskey` does this.
 parsing) and reads `TYPE`, `USER`, `FUNC`, `APPNUM`, `P1..P4`, `REGID`, `SEQ`,
 `CLIENT`.
 
-### Acknowledgement (host -> device, UDP, same port)
+### No acknowledgement
 
-The host **must acknowledge** the event: the stock daemon sends the datagram
-back unchanged to the address and port it came from (its log calls this
-`udp_sent`). The device resends the event until it gets the acknowledgement,
-and it only hands the scanner to the host that acknowledged: observed on an
-MFC-L2700DW, a daemon that received the event but did not echo it got
-`scanimage: open of device brother4:net1;dev0 failed: Invalid argument` for the
-scan that followed, while scans started from the host (no pending event)
-worked. `openskey` echoes every recognised event, including the resends, and
-then starts the scan command (`SKEY_SCAN_DELAY_MS` can insert a pause between
-the two if a model needs it).
+The host sends **nothing** back to the device. Established from two sources:
+
+- Brother's daemon, disassembled (the binary ships with symbols): the UDP
+  thread (`udp_agent`) classifies the datagram (`check_udp_data`: byte 0 =
+  `0x02` and byte 3 = `0x30` is a key event), appends `;CLIENT=<sender ip>`
+  to the string itself, and hands it to the main loop, which validates it
+  (`decode_key_data`: `USER` must be the login user, `HOST` this host's
+  address), sleeps 100 ms and runs the script with `system()`. Its
+  `udp_sent` function is not an acknowledgement: it sends to
+  `localhost:54925` and carries the command-line tool's internal commands
+  (`Add device`, `Del device`, `Refresh Device List`, `List Device`,
+  `Terminate`, header byte 0 = `0x01`/`0x80`, byte 3 = `0x80`..`0x84`).
+- The issue #10 capture of a working setup: after the two event datagrams
+  (device -> host, 2 s apart) the next packets are the scan session on TCP
+  54921; no UDP goes from the host to the device.
+
+So the device resends the event once, about two seconds later, whatever the
+host does. Duplicates must be dropped: the stock daemon skips an identical
+command within 4 s (and is blocked in `system()` while the scan runs),
+`openskey` drops a repeat of `(REGID, SEQ)` within 20 s. The `CLIENT=` field
+some logs show is added by the stock daemon locally; it is not on the wire.
+The stock daemon also keeps 54925 open with `SO_REUSEADDR` because its own
+command-line tool talks to it on that port; `openskey` has no such tool and
+logs any such datagram as unrecognised.
 
 ## 4. The scan
 

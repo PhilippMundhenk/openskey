@@ -132,13 +132,10 @@ fn full_flow_against_the_mock_device() {
         .unwrap();
     let pressed_text = String::from_utf8_lossy(&pressed.stdout).to_string();
     assert!(pressed.status.success(), "{pressed_text}");
-    // the daemon echoes the event back, as the device requires
-    assert!(
-        pressed_text.contains("acknowledged by the daemon"),
-        "{pressed_text}"
-    );
+    // the daemon must not answer the event: a real device expects nothing
+    assert!(pressed_text.contains("nothing came back"), "{pressed_text}");
     let text = wait_for(&log_path, "FILE finished", Duration::from_secs(5));
-    assert!(text.contains("acknowledged the event to"), "{text}");
+    assert!(!text.contains("acknowledg"), "{text}");
     assert!(
         text.contains("DISPATCHED P1=3 P4=2 SEQ=56 FUNC=FILE"),
         "{text}"

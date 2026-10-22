@@ -55,16 +55,16 @@ fn run(args: &[String]) -> i32 {
             }
         }
         return match mock::send_button(func, &host, params) {
-            Ok(true) => {
+            Ok(false) => {
                 println!(
-                    "mock-device: sent {} button to {host} (twice, same SEQ), acknowledged by the daemon",
+                    "mock-device: sent {} button to {host} (twice, same SEQ), nothing came back, as with a real device",
                     func.name()
                 );
                 0
             }
-            Ok(false) => {
+            Ok(true) => {
                 println!(
-                    "mock-device: sent {} button to {host} (twice, same SEQ), NOT acknowledged by the daemon",
+                    "mock-device: sent {} button to {host} (twice, same SEQ), WARNING: the daemon answered; a real device expects nothing back",
                     func.name()
                 );
                 3

@@ -123,7 +123,8 @@ mod tests {
                 &s[start..end]
             })
             .collect();
-        assert_eq!(funcs, vec!["IMAGE", "EMAIL", "OCR", "FILE"]);
+        // the stock daemon's order (issue #10 capture): IMAGE, OCR, EMAIL, FILE
+        assert_eq!(funcs, vec!["IMAGE", "OCR", "EMAIL", "FILE"]);
     }
 
     #[test]

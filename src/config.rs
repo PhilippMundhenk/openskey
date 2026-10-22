@@ -32,11 +32,14 @@ impl Function {
         }
     }
 
+    /// The four functions in the order the stock daemon registers them
+    /// (IMAGE, OCR, EMAIL, FILE: issue #10 capture and the binary's own
+    /// registration strings).
     pub fn all() -> [Function; 4] {
         [
             Function::Image,
-            Function::Email,
             Function::Ocr,
+            Function::Email,
             Function::File,
         ]
     }
@@ -147,7 +150,7 @@ mod tests {
         assert_eq!(Function::File.appnum(), 5);
         assert_eq!(
             Function::all().map(Function::name),
-            ["IMAGE", "EMAIL", "OCR", "FILE"]
+            ["IMAGE", "OCR", "EMAIL", "FILE"]
         );
         assert_eq!(Function::from_name(" file "), Some(Function::File));
         assert_eq!(Function::from_name("ocr"), Some(Function::Ocr));

@@ -120,11 +120,10 @@ jobs:
 
           # A button press with non-default P1..P4 reaches the script.
           "$BIN/mock-device" --button FILE --params 3,1,0,2 | tee button.log
-          # the daemon must acknowledge the event (echo it back), or the device
-          # keeps resending and refuses the scan that follows
-          grep -q 'acknowledged by the daemon' button.log
+          # the daemon must not answer the event: Brother's daemon sends nothing
+          # back and a real device expects nothing (PROTOCOL.md)
+          grep -q 'nothing came back' button.log
           sleep 2
-          grep -q 'acknowledged the event' skey.log
           echo '--- mock-device ---'; cat mock.log
           echo '--- openskey ---'; cat skey.log
           grep -q 'registration from' mock.log
