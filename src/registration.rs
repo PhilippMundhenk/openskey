@@ -65,7 +65,7 @@ pub fn register_once(cfg: &Config) -> io::Result<()> {
     let packet = build_registration(cfg);
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    socket.send_to(&packet, (cfg.device_ip.as_str(), 161))?;
+    socket.send_to(&packet, (cfg.device_ip.as_str(), cfg.device_port))?;
     // Read and discard the get-response if it comes; ignore a timeout.
     let mut buf = [0u8; 2048];
     let _ = socket.recv_from(&mut buf);
@@ -83,6 +83,7 @@ mod tests {
         Config {
             name: "NAS".into(),
             device_ip: "10.0.30.10".into(),
+            device_port: 161,
             host_ip: "10.0.30.10".into(),
             community: "internal".into(),
             duration: 360,

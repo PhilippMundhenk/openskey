@@ -79,16 +79,16 @@ IPADDRESS=192.168.1.50 HOST_IPADDRESS=192.168.1.10 NAME=Scanner ./target/release
 
 ## Testing without a scanner
 
-In one terminal, run the mock device (SNMP agent on port 161):
+In one terminal, run the mock device as an SNMP agent on an unprivileged port:
 
 ```sh
-sudo ./target/release/mock-device          # or --port 1161 to avoid root
+./target/release/mock-device --port 1161
 ```
 
 In another, point the daemon at it and watch it register:
 
 ```sh
-IPADDRESS=127.0.0.1 HOST_IPADDRESS=127.0.0.1 ./target/release/openskey
+IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 HOST_IPADDRESS=127.0.0.1 ./target/release/openskey
 ```
 
 Then inject a button press and watch the daemon dispatch it:
@@ -99,6 +99,36 @@ Then inject a button press and watch the daemon dispatch it:
 
 The same `mock-device` agent can decode what the **real** `brscan-skey` sends
 (point it at `127.0.0.1`), for differential testing against this implementation.
+
+## Capturing from a real scanner
+
+The one part of the protocol not yet pinned down is the exact button-event
+header and scan parameters. To record it, run `openskey` against your real
+scanner with `SKEY_DEBUG=1` and press each Scan-to-PC button; it prints the full
+datagram as hex:
+
+```sh
+# Stop any other daemon bound to UDP 54925 first (e.g. the container's
+# brscan-skey), otherwise the port is taken.
+SKEY_DEBUG=1 NAME=Scanner IPADDRESS=<scanner-ip> HOST_IPADDRESS=<this-host-ip> \
+  ./target/release/openskey
+```
+
+`HOST_IPADDRESS` must be an address the scanner can reach back on. On WSL2 this
+needs mirrored networking (`networkingMode=mirrored` in `.wslconfig`) or a
+forwarded UDP 54925, so the inbound event reaches the WSL instance. Press *Scan
+to File*, then *Image*, *Email*, *OCR* in turn; each prints a line like
+`openskey: CAPTURE 114 bytes from <ip>: <hex> | <ascii>`. Share those lines (one
+per button) to complete the parser.
+
+Alternatively, capture passively with `tcpdump` while the existing, working
+container is registered (no port conflict, works through NAT):
+
+```sh
+sudo tcpdump -i any -s0 -w skey.pcap 'udp port 54925 or udp port 161'
+# press the buttons, then Ctrl-C and share skey.pcap, or:
+tcpdump -r skey.pcap -X -nn 'udp port 54925'
+```
 
 ## License
 

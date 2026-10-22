@@ -64,8 +64,18 @@ fn listen_loop(cfg: &Config, socket: UdpSocket) {
                 continue;
             }
         };
-        let header: Vec<String> = buf[..n.min(4)].iter().map(|b| format!("{b:02x}")).collect();
-        match button::parse(&buf[..n]) {
+        let datagram = &buf[..n];
+        let header: Vec<String> = datagram[..n.min(4)]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        // Full-datagram capture: always for unrecognised packets, and for every
+        // packet when SKEY_DEBUG is set. Paste these when characterising a real
+        // scanner's button events (see README "Capturing from a real scanner").
+        let debug = std::env::var("SKEY_DEBUG")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
+        match button::parse(datagram) {
             Some(ev) => {
                 println!(
                     "openskey: button from {from}: header[{}] FUNC={:?} APPNUM={:?}",
@@ -73,11 +83,40 @@ fn listen_loop(cfg: &Config, socket: UdpSocket) {
                     ev.func,
                     ev.appnum
                 );
+                if debug {
+                    println!(
+                        "openskey: CAPTURE {n} bytes from {from}: {}",
+                        hex_dump(datagram)
+                    );
+                }
                 dispatch(cfg, ev);
             }
-            None => eprintln!("openskey: unrecognised datagram from {from} ({n} bytes)"),
+            None => {
+                eprintln!("openskey: unrecognised datagram from {from} ({n} bytes)");
+                eprintln!(
+                    "openskey: CAPTURE {n} bytes from {from}: {}",
+                    hex_dump(datagram)
+                );
+            }
         }
     }
+}
+
+/// Render a datagram as contiguous hex plus a printable-ASCII view, for
+/// capturing a real device's button events.
+fn hex_dump(data: &[u8]) -> String {
+    let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+    let ascii: String = data
+        .iter()
+        .map(|&b| {
+            if (0x20..0x7f).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    format!("{hex} | {ascii}")
 }
 
 fn dispatch(cfg: &Config, ev: button::ButtonEvent) {

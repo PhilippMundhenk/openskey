@@ -56,8 +56,11 @@ impl Function {
 pub struct Config {
     /// PC name shown on the device panel (USER=... in the registration).
     pub name: String,
-    /// The scanner's IP address (where the SNMP registration is sent, port 161).
+    /// The scanner's IP address (where the SNMP registration is sent).
     pub device_ip: String,
+    /// The scanner's SNMP port (always 161 for a real device; configurable so
+    /// tests can use an unprivileged port with the mock device).
+    pub device_port: u16,
     /// The host IP the device should send button events to (HOST=<ip>:54925).
     /// Must be reachable from the scanner; an empty value is why buttons stay
     /// silent in issue #10.
@@ -86,6 +89,7 @@ impl Config {
     pub fn from_env() -> Config {
         let name = env_or("NAME", "Scanner");
         let device_ip = env_or("IPADDRESS", "");
+        let device_port: u16 = env_or("SKEY_DEVICE_PORT", "161").parse().unwrap_or(161);
         let host_ip = env_or("HOST_IPADDRESS", "");
         let keepalive_interval: u32 = env_or("KEEPALIVE_INTERVAL", "120").parse().unwrap_or(120);
         let duration: u32 = 360;
@@ -110,6 +114,7 @@ impl Config {
         Config {
             name,
             device_ip,
+            device_port,
             host_ip,
             community: env_or("SKEY_COMMUNITY", "internal"),
             duration,
