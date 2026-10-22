@@ -1,6 +1,7 @@
-//! The mock device: a stand-in Brother scanner that answers the SNMP
-//! registration and the status objects like a real MFC-L2700DW and can send
-//! button events. Used by the `mock-device` binary, the tests of this crate,
+//! The mock device: a stand-in Brother scanner.
+//!
+//! It answers the SNMP registration and the status objects like a real
+//! MFC-L2700DW and can send button events. Used by the `mock-device` binary, the tests of this crate,
 //! and the container's end-to-end tests.
 
 use crate::config::Function;
@@ -20,6 +21,7 @@ pub struct MockState {
     /// A registration set-request was received, so the registration object
     /// answers `TRUE` (what `openskey selftest` reads).
     pub registered: bool,
+    /// How many datagrams were handled, SNMP or not.
     pub requests: usize,
 }
 
@@ -29,7 +31,12 @@ pub enum Handled {
     /// A registration set-request with these (OID, string) bindings.
     Registration(Vec<(Vec<u32>, String)>),
     /// A get-request: how many objects were known and how many missing.
-    Get { known: usize, missing: usize },
+    Get {
+        /// Objects the mock had an answer for.
+        known: usize,
+        /// Objects it did not know (the whole request fails with `noSuchName`).
+        missing: usize,
+    },
     /// A set-request without string bindings (not a registration).
     NotAStringSet,
     /// Some other PDU type.
@@ -39,6 +46,7 @@ pub enum Handled {
 }
 
 /// Mirror of a real MFC-L2700DW's status objects.
+#[must_use]
 pub fn canned(oid: &[u32], registered: bool) -> Option<Value> {
     let text = |s: &str| Some(Value::OctetString(s.as_bytes().to_vec()));
     if oid == REG_OID {
@@ -105,15 +113,12 @@ pub fn handle(datagram: &[u8], state: &mut MockState) -> (Handled, Option<Vec<u8
             let mut known = 0;
             let mut first_missing: Option<usize> = None;
             for (i, (oid, _)) in msg.varbinds.iter().enumerate() {
-                match canned(oid, state.registered) {
-                    Some(v) => {
-                        known += 1;
-                        varbinds.push(snmp::varbind(oid, &snmp::encode_value(&v)));
-                    }
-                    None => {
-                        first_missing.get_or_insert(i + 1);
-                        varbinds.push(snmp::varbind(oid, &snmp::null()));
-                    }
+                if let Some(v) = canned(oid, state.registered) {
+                    known += 1;
+                    varbinds.push(snmp::varbind(oid, &snmp::encode_value(&v)));
+                } else {
+                    first_missing.get_or_insert(i + 1);
+                    varbinds.push(snmp::varbind(oid, &snmp::null()));
                 }
             }
             let missing = msg.varbinds.len() - known;
@@ -124,7 +129,7 @@ pub fn handle(datagram: &[u8], state: &mut MockState) -> (Handled, Option<Vec<u8
                     snmp::TAG_GET_RESPONSE,
                     msg.request_id,
                     snmp::ERR_NO_SUCH_NAME,
-                    index as i64,
+                    i64::try_from(index).unwrap_or(i64::MAX),
                     &varbinds,
                 ),
                 None => snmp::message(
@@ -141,17 +146,20 @@ pub fn handle(datagram: &[u8], state: &mut MockState) -> (Handled, Option<Vec<u8
 }
 
 /// A line of log output for one handled datagram.
+#[must_use]
 pub fn describe(handled: &Handled, from: &str, bytes: usize) -> String {
     match handled {
         Handled::Registration(bindings) => {
+            use std::fmt::Write as _;
             let mut out = format!("mock-device: registration from {from}:");
             for (oid, value) in bindings {
                 let oid_s = oid
                     .iter()
-                    .map(|a| a.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(".");
-                out.push_str(&format!("\n    {oid_s} = {value}"));
+                // writing to a String cannot fail
+                let _ = write!(out, "\n    {oid_s} = {value}");
             }
             out
         }
@@ -169,7 +177,14 @@ pub fn describe(handled: &Handled, from: &str, bytes: usize) -> String {
 }
 
 /// Serve as an SNMP agent on `socket` until `stop` is set or `deadline`
-/// passes (None: forever). Every handled datagram is reported through `log`.
+/// passes (`None`: forever).
+///
+/// Every handled datagram is reported through `log`.
+///
+/// # Errors
+///
+/// The socket's read timeout could not be set, or receiving failed with
+/// something other than a timeout.
 pub fn serve(
     socket: &UdpSocket,
     state: &mut MockState,
@@ -205,6 +220,7 @@ pub fn serve(
 
 /// A button-press datagram as a real device sends it: the 4-byte header
 /// `02 00 LL 30` (LL = datagram length + 1) and the token string.
+#[must_use]
 pub fn button_datagram(func: Function, params: [u32; 4]) -> Vec<u8> {
     let body = format!(
         "TYPE=BR;BUTTON=SCAN;USER=\"Scanner\";FUNC={};HOST=127.0.0.1:54925;APPNUM={};P1={};P2={};P3={};P4={};REGID=60614;SEQ=56;",
@@ -215,17 +231,24 @@ pub fn button_datagram(func: Function, params: [u32; 4]) -> Vec<u8> {
         params[2],
         params[3]
     );
-    let ll = (4 + body.len() + 1) as u8;
+    // the body is a short token string, far below 255 bytes
+    let ll = u8::try_from(4 + body.len() + 1).unwrap_or(u8::MAX);
     let mut datagram = vec![0x02, 0x00, ll, 0x30];
     datagram.extend_from_slice(body.as_bytes());
     datagram
 }
 
 /// Send a button press to a listening daemon, twice with the same SEQ like a
-/// real device (which always resends once, about two seconds later), then
-/// listen briefly. A real device expects **nothing** back (Brother's daemon
-/// sends nothing, PROTOCOL.md), so the result says whether the daemon wrongly
-/// answered: `Ok(true)` means something came back.
+/// real device, then listen briefly.
+///
+/// A real device always resends once, about two seconds later, and expects
+/// **nothing** back (Brother's daemon sends nothing, PROTOCOL.md), so the
+/// result says whether the daemon wrongly answered: `Ok(true)` means
+/// something came back.
+///
+/// # Errors
+///
+/// No UDP socket could be opened, or sending to `host` failed.
 pub fn send_button(func: Function, host: &str, params: [u32; 4]) -> io::Result<bool> {
     let datagram = button_datagram(func, params);
     let socket = UdpSocket::bind("0.0.0.0:0")?;
@@ -240,17 +263,23 @@ pub fn send_button(func: Function, host: &str, params: [u32; 4]) -> io::Result<b
 /// A mock device serving on an ephemeral localhost port in a thread, for
 /// tests. Stops and joins when dropped.
 pub struct MockServer {
+    /// The UDP port it answers on (127.0.0.1).
     pub port: u16,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<MockState>>,
 }
 
 impl MockServer {
-    pub fn start(registered: bool) -> MockServer {
-        let socket = UdpSocket::bind("127.0.0.1:0").expect("bind an ephemeral port");
-        let port = socket.local_addr().unwrap().port();
+    /// Bind an ephemeral port on 127.0.0.1 and serve from a thread.
+    ///
+    /// # Errors
+    ///
+    /// No port could be bound.
+    pub fn start(registered: bool) -> io::Result<Self> {
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        let port = socket.local_addr()?.port();
         let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = stop.clone();
+        let stop_thread = Arc::clone(&stop);
         let thread = std::thread::spawn(move || {
             let mut state = MockState {
                 registered,
@@ -259,17 +288,22 @@ impl MockServer {
             let _ = serve(&socket, &mut state, &stop_thread, None, &mut |_| {});
             state
         });
-        MockServer {
+        Ok(Self {
             port,
             stop,
             thread: Some(thread),
-        }
+        })
     }
 
-    /// Stop serving and return the final state.
+    /// Stop serving and return the final state (empty if the serving thread
+    /// panicked).
+    #[must_use]
     pub fn stop(mut self) -> MockState {
         self.stop.store(true, Ordering::Relaxed);
-        self.thread.take().unwrap().join().unwrap()
+        self.thread
+            .take()
+            .and_then(|t| t.join().ok())
+            .unwrap_or_default()
     }
 }
 
@@ -422,7 +456,7 @@ mod tests {
 
     #[test]
     fn server_answers_over_udp_and_reports_its_state() {
-        let server = MockServer::start(false);
+        let server = MockServer::start(false).unwrap();
         let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -449,7 +483,7 @@ mod tests {
         let mut state = MockState::default();
         let deadline = Instant::now() + Duration::from_millis(600);
         serve(&socket, &mut state, &stop, Some(deadline), &mut |l| {
-            lines.push(l)
+            lines.push(l);
         })
         .unwrap();
         assert!(Instant::now() >= deadline);

@@ -8,18 +8,24 @@
 use crate::config::Function;
 use crate::status::json_string;
 
+/// One button press as the device reported it.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ButtonEvent {
+    /// `TYPE`, always `BR`.
     pub type_field: String,
+    /// `USER`: the registered PC name the press was for.
     pub user: String,
+    /// `FUNC`: the Scan-to-PC function pressed, when it is one we know.
     pub func: Option<Function>,
+    /// `APPNUM`: the function's number as the device sent it.
     pub appnum: Option<u32>,
-    /// `P1`..`P4`: the per-press option fields. The device fills them from
-    /// the shortcut that was pressed; `0` is "default". An MFC-L2700DW sends
-    /// all zeros (the stock daemon never decodes them either; the panel scan
-    /// options a model may offer are read by the scan backend over TCP
-    /// 54921). They are passed through so a script can use them if a model
-    /// populates them.
+    /// `P1`..`P4`: the per-press option fields; `0` is "default".
+    ///
+    /// The device fills them from the shortcut that was pressed. An
+    /// MFC-L2700DW sends all zeros (the stock daemon never decodes them
+    /// either; the panel scan options a model may offer are read by the scan
+    /// backend over TCP 54921). They are passed through so a script can use
+    /// them if a model populates them.
     pub params: [Option<u32>; 4],
     /// `REGID` from the event: a registration id the device assigns, distinct
     /// per function.
@@ -36,10 +42,11 @@ pub struct ButtonEvent {
 }
 
 impl ButtonEvent {
-    /// The event as a JSON object, for scripts (SKEY_EVENT) and logs.
+    /// The event as a JSON object, for scripts (`SKEY_EVENT`) and logs.
+    #[must_use]
     pub fn to_json(&self) -> String {
-        fn opt_u<T: ToString>(v: &Option<T>) -> String {
-            v.as_ref().map(|x| x.to_string()).unwrap_or("null".into())
+        fn opt_u<T: ToString>(v: Option<&T>) -> String {
+            v.map_or_else(|| "null".into(), std::string::ToString::to_string)
         }
         format!(
             concat!(
@@ -50,19 +57,17 @@ impl ButtonEvent {
             json_string(&self.type_field),
             json_string(&self.user),
             self.func
-                .map(|f| json_string(f.name()))
-                .unwrap_or("null".into()),
-            opt_u(&self.appnum),
-            opt_u(&self.params[0]),
-            opt_u(&self.params[1]),
-            opt_u(&self.params[2]),
-            opt_u(&self.params[3]),
-            opt_u(&self.regid),
-            opt_u(&self.seq),
+                .map_or_else(|| "null".into(), |f| json_string(f.name())),
+            opt_u(self.appnum.as_ref()),
+            opt_u(self.params[0].as_ref()),
+            opt_u(self.params[1].as_ref()),
+            opt_u(self.params[2].as_ref()),
+            opt_u(self.params[3].as_ref()),
+            opt_u(self.regid.as_ref()),
+            opt_u(self.seq.as_ref()),
             self.client
                 .as_ref()
-                .map(|c| json_string(c))
-                .unwrap_or("null".into()),
+                .map_or_else(|| "null".into(), |c| json_string(c)),
             json_string(&self.raw),
         )
     }
@@ -70,6 +75,7 @@ impl ButtonEvent {
 
 /// Parse a raw 54925 datagram. Returns None if it does not contain a token
 /// string we recognise.
+#[must_use]
 pub fn parse(datagram: &[u8]) -> Option<ButtonEvent> {
     let text = String::from_utf8_lossy(datagram);
     let start = text.find("TYPE=")?;

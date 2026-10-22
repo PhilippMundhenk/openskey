@@ -34,43 +34,55 @@ pub const OID_SERIAL: [u32; 17] = [1, 3, 6, 1, 4, 1, 2435, 2, 3, 9, 4, 2, 1, 5, 
 pub const OID_FIRMWARE: [u32; 17] = [1, 3, 6, 1, 4, 1, 2435, 2, 3, 9, 4, 2, 1, 5, 5, 17, 0];
 /// The first line of the front-panel display.
 pub const OID_DISPLAY: [u32; 16] = [1, 3, 6, 1, 4, 1, 2435, 2, 4, 3, 1240, 3, 2, 1, 5, 1];
-/// `mcsNetScanner`: network scanning supported / enabled.
+/// `mcsNetScanner.1`: network scanning supported.
 pub const OID_NET_SCANNER_SUPPORTED: [u32; 15] =
     [1, 3, 6, 1, 4, 1, 2435, 2, 3, 9, 2, 101, 3, 11, 1];
+/// `mcsNetScanner.2`: network scanning enabled.
 pub const OID_NET_SCANNER_ENABLED: [u32; 15] = [1, 3, 6, 1, 4, 1, 2435, 2, 3, 9, 2, 101, 3, 11, 2];
-/// `mcsNetSKy`: the network Scan Key (Scan-to-PC button) supported / enabled.
+/// `mcsNetSKy.1`: the network Scan Key (Scan-to-PC button) supported.
 pub const OID_SCAN_KEY_SUPPORTED: [u32; 15] = [1, 3, 6, 1, 4, 1, 2435, 2, 3, 9, 2, 101, 3, 12, 1];
+/// `mcsNetSKy.2`: the network Scan Key enabled.
 pub const OID_SCAN_KEY_ENABLED: [u32; 15] = [1, 3, 6, 1, 4, 1, 2435, 2, 3, 9, 2, 101, 3, 12, 2];
 
-/// Everything `openskey status` reports. Fields the device does not expose
-/// stay `None` and serialise as `null`.
+/// Everything `openskey status` reports.
+///
+/// Fields the device does not expose stay `None` and serialise as `null`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Status {
+    /// The device address the status was read from.
     pub device_ip: String,
     /// The device answered at least one SNMP query.
     pub reachable: bool,
     /// Self-test: the registration object reads back `TRUE`, i.e. the device
     /// currently lists a Scan-to-PC host.
     pub registered: Option<bool>,
+    /// The model, from `sysDescr` (`MFC-L2700DW`).
     pub model: Option<String>,
+    /// The serial number.
     pub serial: Option<String>,
+    /// The firmware version.
     pub firmware: Option<String>,
     /// First line of the panel display, trimmed.
     pub display: Option<String>,
+    /// Network scanning supported (`mcsNetScanner.1`).
     pub net_scanner_supported: Option<bool>,
+    /// Network scanning enabled (`mcsNetScanner.2`).
     pub net_scanner_enabled: Option<bool>,
+    /// The network Scan Key supported (`mcsNetSKy.1`).
     pub scan_key_supported: Option<bool>,
+    /// The network Scan Key enabled (`mcsNetSKy.2`).
     pub scan_key_enabled: Option<bool>,
 }
 
 impl Status {
     /// Serialise as a JSON object (no dependencies, so hand-rolled).
+    #[must_use]
     pub fn to_json(&self) -> String {
-        fn s(v: &Option<String>) -> String {
-            v.as_ref().map(|t| json_string(t)).unwrap_or("null".into())
+        fn s(v: Option<&String>) -> String {
+            v.map_or_else(|| "null".into(), |t| json_string(t))
         }
-        fn b(v: &Option<bool>) -> String {
-            v.map(|x| x.to_string()).unwrap_or("null".into())
+        fn b(v: Option<bool>) -> String {
+            v.map_or_else(|| "null".into(), |x| x.to_string())
         }
         format!(
             concat!(
@@ -90,21 +102,23 @@ impl Status {
             ),
             json_string(&self.device_ip),
             self.reachable,
-            b(&self.registered),
-            s(&self.model),
-            s(&self.serial),
-            s(&self.firmware),
-            s(&self.display),
-            b(&self.net_scanner_supported),
-            b(&self.net_scanner_enabled),
-            b(&self.scan_key_supported),
-            b(&self.scan_key_enabled),
+            b(self.registered),
+            s(self.model.as_ref()),
+            s(self.serial.as_ref()),
+            s(self.firmware.as_ref()),
+            s(self.display.as_ref()),
+            b(self.net_scanner_supported),
+            b(self.net_scanner_enabled),
+            b(self.scan_key_supported),
+            b(self.scan_key_enabled),
         )
     }
 }
 
 /// JSON string literal with the escapes JSON requires.
+#[must_use]
 pub fn json_string(s: &str) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -114,7 +128,10 @@ pub fn json_string(s: &str) -> String {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c if u32::from(c) < 0x20 => {
+                // writing to a String cannot fail
+                let _ = write!(out, "\\u{:04x}", u32::from(c));
+            }
             c => out.push(c),
         }
     }
@@ -131,7 +148,7 @@ struct Client {
 }
 
 impl Client {
-    fn connect(cfg: &Config) -> io::Result<Client> {
+    fn connect(cfg: &Config) -> io::Result<Self> {
         if cfg.device_ip.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -140,7 +157,7 @@ impl Client {
         }
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         socket.set_read_timeout(Some(Duration::from_millis(1000)))?;
-        Ok(Client {
+        Ok(Self {
             socket,
             target: (cfg.device_ip.clone(), cfg.device_port),
             community: cfg.community.clone(),
@@ -148,7 +165,7 @@ impl Client {
         })
     }
 
-    /// GET one object. Each OID goes in its own request because SNMPv1 fails
+    /// GET one object. Each OID goes in its own request because `SNMPv1` fails
     /// the whole request (noSuchName) when any one object is missing, and the
     /// set of objects a given model exposes varies.
     fn get(&mut self, oid: &[u32]) -> Option<Value> {
@@ -198,15 +215,26 @@ impl Client {
 }
 
 /// Self-test: does the device currently report a Scan-to-PC registration?
+///
 /// Reads the same object the registration writes; a registered device answers
 /// `TRUE`. `Ok(None)` means the device did not answer.
+///
+/// # Errors
+///
+/// `IPADDRESS` is not configured, or no UDP socket could be opened.
 pub fn registered(cfg: &Config) -> io::Result<Option<bool>> {
     let mut client = Client::connect(cfg)?;
     Ok(client.get_text(&REG_OID).map(|t| is_true(&t)))
 }
 
-/// Query the full status. Never fails on a missing object; `reachable` is
-/// false only if the device answered nothing at all.
+/// Query the full status.
+///
+/// Never fails on a missing object; `reachable` is false only if the device
+/// answered nothing at all.
+///
+/// # Errors
+///
+/// `IPADDRESS` is not configured, or no UDP socket could be opened.
 pub fn query(cfg: &Config) -> io::Result<Status> {
     let mut client = Client::connect(cfg)?;
     let mut st = Status {
@@ -239,6 +267,7 @@ pub fn query(cfg: &Config) -> io::Result<Status> {
 }
 
 /// The registration object's value, `TRUE` / `FALSE` (also accepts `1`/`0`).
+#[must_use]
 pub fn is_true(text: &str) -> bool {
     let t = text.trim();
     t.eq_ignore_ascii_case("TRUE") || t == "1"
@@ -246,6 +275,7 @@ pub fn is_true(text: &str) -> bool {
 
 /// `"Brother MFC-L2700DW series"` -> `"MFC-L2700DW"`. Keeps the text as-is
 /// when it does not look like that.
+#[must_use]
 pub fn model_from_sys_descr(descr: &str) -> String {
     let t = descr.trim();
     let t = t.strip_prefix("Brother ").unwrap_or(t);
@@ -334,7 +364,7 @@ mod tests {
 
     #[test]
     fn query_reads_every_object_from_the_mock_device() {
-        let server = crate::mock::MockServer::start(true);
+        let server = crate::mock::MockServer::start(true).unwrap();
         let st = query(&cfg_for(server.port)).unwrap();
         assert_eq!(
             st,
@@ -353,7 +383,7 @@ mod tests {
             }
         );
         assert_eq!(registered(&cfg_for(server.port)).unwrap(), Some(true));
-        let unregistered = crate::mock::MockServer::start(false);
+        let unregistered = crate::mock::MockServer::start(false).unwrap();
         assert_eq!(
             registered(&cfg_for(unregistered.port)).unwrap(),
             Some(false)
