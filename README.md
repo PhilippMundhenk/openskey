@@ -113,6 +113,7 @@ Configuration is by environment variable, compatible with the container:
 | `SKEY_LISTEN_PORT`  | the button-event port (the device sends to 54925; tests use another) | `54925` |
 | `SKEY_DEBUG`        | log every button datagram in full (hex + ASCII)      | off       |
 | `SKEY_RUN_SECONDS`  | exit normally after this many seconds (captures, tests) | forever |
+| `SKEY_SCAN_DELAY_MS`| pause between acknowledging a button event and starting the scan command | `0` |
 | `SKEY_DEVICE_PORT`  | the device's SNMP port (tests use the mock on 1161)  | `161`     |
 | `SKEY_IMAGE` / `SKEY_OCR` / `SKEY_EMAIL` / `SKEY_FILE` | command per function   | container script paths |
 

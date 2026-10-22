@@ -126,12 +126,19 @@ fn full_flow_against_the_mock_device() {
 
     // a button press, sent twice, runs the command once
     let host = format!("127.0.0.1:{listen_port}");
-    let status = Command::new(MOCK)
+    let pressed = Command::new(MOCK)
         .args(["--button", "FILE", "--host", &host, "--params", "3,1,0,2"])
-        .status()
+        .output()
         .unwrap();
-    assert!(status.success());
+    let pressed_text = String::from_utf8_lossy(&pressed.stdout).to_string();
+    assert!(pressed.status.success(), "{pressed_text}");
+    // the daemon echoes the event back, as the device requires
+    assert!(
+        pressed_text.contains("acknowledged by the daemon"),
+        "{pressed_text}"
+    );
     let text = wait_for(&log_path, "FILE finished", Duration::from_secs(5));
+    assert!(text.contains("acknowledged the event to"), "{text}");
     assert!(
         text.contains("DISPATCHED P1=3 P4=2 SEQ=56 FUNC=FILE"),
         "{text}"
