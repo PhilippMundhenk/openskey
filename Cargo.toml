@@ -1,0 +1,29 @@
+[package]
+name = "openskey"
+version = "0.1.0"
+edition = "2021"
+description = "An open, leak-free reimplementation of Brother's brscan-skey Scan-to-PC key daemon"
+license = "MIT OR Apache-2.0"
+repository = ""
+readme = "README.md"
+
+# Zero runtime dependencies on purpose: the whole SNMPv1/BER encoding and the
+# UDP handling are implemented here, so the daemon builds offline and we own
+# every socket's lifetime (the original leaks one per registration, see the
+# BrotherScannerDocker issues #179/#186).
+
+[lib]
+name = "openskey"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openskey"
+path = "src/main.rs"
+
+[[bin]]
+name = "mock-device"
+path = "src/bin/mock_device.rs"
+
+[profile.release]
+lto = true
+strip = true
