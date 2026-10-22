@@ -99,6 +99,7 @@ Configuration is by environment variable, compatible with the container:
 | `HOST_IPADDRESS`    | this host's IP the device sends button events to     | required  |
 | `KEEPALIVE_INTERVAL`| seconds between re-registrations (< 360)              | `120`     |
 | `SKEY_SELFTEST`     | read the registration back after each refresh        | `true`    |
+| `SKEY_HOLD_FILES`   | colon-separated files; while one exists and is younger than 10 minutes (a scan in progress), the refresh is skipped | none |
 | `SKEY_DEVICE_PORT`  | the device's SNMP port (tests use the mock on 1161)  | `161`     |
 | `SKEY_IMAGE` / `SKEY_OCR` / `SKEY_EMAIL` / `SKEY_FILE` | command per function   | container script paths |
 

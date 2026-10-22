@@ -4,6 +4,7 @@
 
 pub mod button;
 pub mod config;
+pub mod hold;
 pub mod registration;
 pub mod snmp;
 pub mod status;

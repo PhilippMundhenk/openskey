@@ -64,8 +64,15 @@ jobs:
 
           # The daemon registers, verifies its registration, and listens.
           SKEY_FILE='echo DISPATCHED P1=$SKEY_P1 P4=$SKEY_P4 SEQ=$SKEY_SEQ FUNC=$SKEY_FUNC' HOST_IPADDRESS=127.0.0.1 \
+            SKEY_HOLD_FILES="$PWD/STATUS_SCAN:$PWD/STATUS_WAITING" \
             NAME=CI KEEPALIVE_INTERVAL=2 "$BIN/openskey" > skey.log 2>&1 &
           sleep 2
+
+          # While the host marks a scan in progress, the refresh is skipped.
+          touch STATUS_WAITING
+          sleep 3
+          grep -q 'scan in progress' skey.log
+          rm STATUS_WAITING
 
           # Self-test from a separate process: the device now lists us.
           "$BIN/openskey" selftest | tee selftest.log
