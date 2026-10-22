@@ -93,9 +93,20 @@ Token string fields (the first four match the registration):
 
 - `TYPE=BR`, `BUTTON=SCAN`, `USER` (the registered PC name), `FUNC` / `APPNUM`
   (which function was pressed), `HOST` (echoes our registered host).
-- `P1..P4` — per-button scan options chosen on the panel; `0` is the default.
+- `P1..P4` — four numeric per-press option fields; `0` means default. An
+  MFC-L2700DW sends `0;0;0;0` for every button, with and without paper in the
+  ADF, so they are **not** device state. The stock daemon carries the string
+  through to the scan script without decoding these fields (its binary holds
+  no parser for them). The scan options a model may let the user pick on the
+  panel ("set at device": file type, colour, resolution) are not in this
+  datagram at all: the scan client reads them from the device over TCP 54921
+  (`ESC GKP`), which is the SANE backend's job, not the button daemon's.
+  `openskey` parses `P1..P4` and hands them to the script as `SKEY_P1..P4`.
 - `REGID` — a registration id the device assigns, distinct per function.
 - `SEQ` — a sequence number, one per press.
+- `CLIENT` — the registered host's address as the device sees it. Seen in the
+  sample event embedded in the stock binary (after an empty `;;` token), not
+  in every capture; optional.
 
 The stock `brscan-skey` additionally checks `USER` matches the registered user
 and `HOST` resolves to this host (`decode_key_data IP mismatch` otherwise)
@@ -115,3 +126,34 @@ the resend sooner) is not yet characterised; dedup makes it harmless either way.
 Dispatch runs the configured command (the same `scantofile.py` etc. the
 container already ships), which invokes `scanimage` against the device over TCP
 54921. That part is unchanged by this project.
+
+`openskey` passes everything the device sent to the script, in its
+environment: `SKEY_FUNC`, `SKEY_APPNUM`, `SKEY_P1`..`SKEY_P4`, `SKEY_REGID`,
+`SKEY_SEQ`, `SKEY_CLIENT` (when present), the raw token string `SKEY_PARAMS`
+and the whole event as JSON in `SKEY_EVENT`.
+
+## 5. Status objects (openskey only; not in the stock daemon)
+
+Beyond the original, `openskey status` and `openskey selftest` read a few
+objects from Brother's private MIB with ordinary SNMPv1 get-requests
+(community `internal`, one object per request, because SNMPv1 fails the whole
+request when any object is missing). **Scanner objects only** — this is a
+scanner tool; printer objects (toner, drum, page counters) are deliberately
+out of scope. Taken from a full walk of a live MFC-L2700DW, named with the
+published BROTHER-MIB:
+
+| Object | OID | Meaning |
+| ------ | --- | ------- |
+| `brRegisterKeyInfo` | `1.3.6.1.4.1.2435.2.3.9.2.11.1.1.0` | The registration object (section 1). Reads back `TRUE` while the device lists a Scan-to-PC host: the **self-test**. |
+| `sysDescr` | `1.3.6.1.2.1.1.1.0` | `Brother MFC-L2700DW series` → model |
+| serial number | `1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0` | device serial |
+| firmware | `1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.17.0` | firmware version |
+| panel display | `1.3.6.1.4.1.2435.2.4.3.1240.3.2.1.5.1` | first line of the LCD |
+| `mcsNetScanner` | `1.3.6.1.4.1.2435.2.3.9.2.101.3.11.{1,2}` | network scanning supported (.1) / enabled (.2), INTEGER 1/0 |
+| `mcsNetSKy` | `1.3.6.1.4.1.2435.2.3.9.2.101.3.12.{1,2}` | the network Scan Key (Scan-to-PC button) supported / enabled |
+
+The capability objects are what the stock daemon probes on every registration
+(its `brPhoenixAllCapability` query, the step that leaks a socket). Whether
+paper is in the ADF is **not** available this way: a walk with an empty and
+with a loaded feeder differs only in a session nonce under the security
+branch (`...2.4.3.2435.5.100`).

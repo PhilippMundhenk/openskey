@@ -18,8 +18,8 @@ socket leak and with a documented, testable protocol.
 ## Why
 
 **Brother does not support its Linux drivers.** They are shipped as
-closed-source, binary-only packages, and when asked for help with a defect in
-`brscan-skey`, Brother's support declined and advised fixing it yourself. The
+closed-source, binary-only packages, and when asked about a defect in
+`brscan-skey`, Brother referred to not supporting its Linux drivers. The
 driver license does, however, explicitly allow modifying and preparing
 derivative works. This project takes Brother up on that: an open, documented,
 maintainable implementation of the Scan-to-PC protocol that anyone can inspect,
@@ -39,18 +39,45 @@ never delay re-registration.
 
 ## Status
 
-Early. Working and tested so far:
+Working and tested, against a live MFC-L2700DW and in CI against the mock:
 
 - SNMPv1/BER encoder and the exact registration set-request (verified against
-  the issue #10 captures).
-- Keepalive loop, leak-free by construction.
-- Button-event (UDP 54925) parsing of `TYPE`/`USER`/`FUNC`/`APPNUM`.
-- Dispatch to a per-function command.
-- A `mock-device` SNMP agent + button injector for testing without hardware.
+  the issue #10 captures and a live device).
+- Keepalive loop, leak-free by construction, with a **self-test** after every
+  registration: the registration object is read back and must say `TRUE`.
+- Button-event (UDP 54925) parsing: `TYPE`/`USER`/`FUNC`/`APPNUM`,
+  `P1..P4`, `REGID`/`SEQ` (deduplicates the device's resends) and `CLIENT`.
+- Dispatch to a per-function command, with every event field in the script's
+  environment (`SKEY_FUNC`, `SKEY_P1..P4`, `SKEY_SEQ`, `SKEY_EVENT` JSON, ...).
+- `openskey status`: the scanner's state over SNMP as JSON (see below).
+- A `mock-device` SNMP agent + button injector that mirrors a real
+  MFC-L2700DW, for testing without hardware.
 
-Next: pin down the exact button-event header and scan-parameter fields from a
-live capture, validate the scan-command argument contract against the container
-scripts, and package it as a drop-in for the container.
+Scope: this is a **scanner** tool. Printer objects (toner, drum, page counters)
+are deliberately not exposed.
+
+## Commands
+
+| Command             | Does                                                                     | Exit code                              |
+| ------------------- | ------------------------------------------------------------------------ | -------------------------------------- |
+| `openskey`          | run the Scan-to-PC daemon                                                |                                        |
+| `openskey selftest` | ask the device whether it currently lists a Scan-to-PC host              | 0 yes, 1 no, 2 no answer               |
+| `openskey status`   | print the scanner status as one JSON object                              | 0 device answered, 2 not               |
+
+`openskey status` reports, each `null` when the model lacks the object:
+
+```json
+{"device_ip":"192.168.1.50","reachable":true,"registered":true,
+ "model":"MFC-L2700DW","serial":"E73941F6N621420","firmware":"Y2309112149",
+ "display":"Scan:   drück",
+ "net_scanner_supported":true,"net_scanner_enabled":true,
+ "scan_key_supported":true,"scan_key_enabled":true}
+```
+
+`registered` is the self-test; `scan_key_*` says whether the device supports
+and has enabled the network Scan-to-PC key at all. The objects are listed in
+[PROTOCOL.md](PROTOCOL.md), section 5. Each query opens one socket and closes
+it, so polling cannot leak.
 
 ## Build and test
 
@@ -71,7 +98,14 @@ Configuration is by environment variable, compatible with the container:
 | `IPADDRESS`         | the scanner's IP (registration target)               | required  |
 | `HOST_IPADDRESS`    | this host's IP the device sends button events to     | required  |
 | `KEEPALIVE_INTERVAL`| seconds between re-registrations (< 360)              | `120`     |
+| `SKEY_SELFTEST`     | read the registration back after each refresh        | `true`    |
+| `SKEY_DEVICE_PORT`  | the device's SNMP port (tests use the mock on 1161)  | `161`     |
 | `SKEY_IMAGE` / `SKEY_OCR` / `SKEY_EMAIL` / `SKEY_FILE` | command per function   | container script paths |
+
+The command runs as `sh -c "<command>" -- <device> <name>` (the two positional
+arguments the stock daemon passes) with the event in its environment:
+`SKEY_FUNC`, `SKEY_APPNUM`, `SKEY_P1`..`SKEY_P4`, `SKEY_REGID`, `SKEY_SEQ`,
+`SKEY_CLIENT`, the raw token string `SKEY_PARAMS` and the JSON `SKEY_EVENT`.
 
 ```sh
 IPADDRESS=192.168.1.50 HOST_IPADDRESS=192.168.1.10 NAME=Scanner ./target/release/openskey
@@ -91,21 +125,27 @@ In another, point the daemon at it and watch it register:
 IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 HOST_IPADDRESS=127.0.0.1 ./target/release/openskey
 ```
 
-Then inject a button press and watch the daemon dispatch it:
+Then inject a button press and watch the daemon dispatch it (optionally with
+non-default `P1..P4`), and read the status the mock answers with:
 
 ```sh
-./target/release/mock-device --button FILE
+./target/release/mock-device --button FILE --params 3,1,0,2
+IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 ./target/release/openskey selftest
+IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 ./target/release/openskey status
 ```
+
+The mock answers the registration object with `TRUE` only after it received a
+registration, so `selftest` is meaningful against it.
 
 The same `mock-device` agent can decode what the **real** `brscan-skey` sends
 (point it at `127.0.0.1`), for differential testing against this implementation.
 
 ## Capturing from a real scanner
 
-The one part of the protocol not yet pinned down is the exact button-event
-header and scan parameters. To record it, run `openskey` against your real
-scanner with `SKEY_DEBUG=1` and press each Scan-to-PC button; it prints the full
-datagram as hex:
+The button event has been decoded from a live MFC-L2700DW. To check another
+model (or see what it puts into `P1..P4`), run `openskey` against it with
+`SKEY_DEBUG=1` and press each Scan-to-PC button; it prints the full datagram as
+hex:
 
 ```sh
 # Stop any other daemon bound to UDP 54925 first (e.g. the container's
