@@ -322,4 +322,69 @@ mod tests {
         assert_eq!(OID_NET_SCANNER_SUPPORTED[13..], [11, 1]);
         assert_eq!(OID_SCAN_KEY_ENABLED[13..], [12, 2]);
     }
+
+    fn cfg_for(port: u16) -> Config {
+        let port = port.to_string();
+        Config::from_lookup(move |k| match k {
+            "IPADDRESS" => Some("127.0.0.1".into()),
+            "SKEY_DEVICE_PORT" => Some(port.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn query_reads_every_object_from_the_mock_device() {
+        let server = crate::mock::MockServer::start(true);
+        let st = query(&cfg_for(server.port)).unwrap();
+        assert_eq!(
+            st,
+            Status {
+                device_ip: "127.0.0.1".into(),
+                reachable: true,
+                registered: Some(true),
+                model: Some("MFC-L2700DW".into()),
+                serial: Some("E73941F6N621420".into()),
+                firmware: Some("Y2309112149".into()),
+                display: Some("Scan:   drück".into()),
+                net_scanner_supported: Some(true),
+                net_scanner_enabled: Some(true),
+                scan_key_supported: Some(true),
+                scan_key_enabled: Some(true),
+            }
+        );
+        assert_eq!(registered(&cfg_for(server.port)).unwrap(), Some(true));
+        let unregistered = crate::mock::MockServer::start(false);
+        assert_eq!(
+            registered(&cfg_for(unregistered.port)).unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            query(&cfg_for(unregistered.port)).unwrap().registered,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn an_unreachable_device_answers_quickly_with_reachable_false() {
+        let free = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let started = std::time::Instant::now();
+        let st = query(&cfg_for(port)).unwrap();
+        assert!(!st.reachable);
+        assert_eq!(st.model, None);
+        assert_eq!(st.registered, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "one timeout, not nine"
+        );
+        assert_eq!(registered(&cfg_for(port)).unwrap(), None);
+    }
+
+    #[test]
+    fn no_device_address_is_an_error() {
+        let cfg = Config::from_lookup(|_| None);
+        assert!(query(&cfg).unwrap_err().to_string().contains("IPADDRESS"));
+        assert!(registered(&cfg).is_err());
+    }
 }
