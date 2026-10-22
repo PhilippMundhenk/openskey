@@ -1,5 +1,5 @@
 //! Daemon configuration, from environment variables (compatible with the names
-//! used by the BrotherScannerDocker container).
+//! used by the `BrotherScannerDocker` container).
 
 use std::collections::BTreeMap;
 
@@ -7,80 +7,88 @@ use std::collections::BTreeMap;
 /// device expects for each (observed in the registration captures, issue #10).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Function {
+    /// Scan to Image (`APPNUM=1`).
     Image,
+    /// Scan to E-mail (`APPNUM=2`).
     Email,
+    /// Scan to OCR (`APPNUM=3`).
     Ocr,
+    /// Scan to File (`APPNUM=5`).
     File,
 }
 
 impl Function {
-    pub fn name(self) -> &'static str {
+    /// The name as it appears on the wire (`FUNC=...`).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
         match self {
-            Function::Image => "IMAGE",
-            Function::Email => "EMAIL",
-            Function::Ocr => "OCR",
-            Function::File => "FILE",
+            Self::Image => "IMAGE",
+            Self::Email => "EMAIL",
+            Self::Ocr => "OCR",
+            Self::File => "FILE",
         }
     }
 
-    pub fn appnum(self) -> u32 {
+    /// The number the device expects for the function (`APPNUM=...`).
+    #[must_use]
+    pub const fn appnum(self) -> u32 {
         match self {
-            Function::Image => 1,
-            Function::Email => 2,
-            Function::Ocr => 3,
-            Function::File => 5,
+            Self::Image => 1,
+            Self::Email => 2,
+            Self::Ocr => 3,
+            Self::File => 5,
         }
     }
 
     /// The four functions in the order the stock daemon registers them
     /// (IMAGE, OCR, EMAIL, FILE: issue #10 capture and the binary's own
     /// registration strings).
-    pub fn all() -> [Function; 4] {
-        [
-            Function::Image,
-            Function::Ocr,
-            Function::Email,
-            Function::File,
-        ]
+    #[must_use]
+    pub const fn all() -> [Self; 4] {
+        [Self::Image, Self::Ocr, Self::Email, Self::File]
     }
 
-    pub fn from_name(s: &str) -> Option<Function> {
+    /// The function for a wire name (`IMAGE`, `EMAIL`, `OCR`, `FILE`; any
+    /// case, surrounding whitespace ignored).
+    #[must_use]
+    pub fn from_name(s: &str) -> Option<Self> {
         match s.trim().to_ascii_uppercase().as_str() {
-            "IMAGE" => Some(Function::Image),
-            "EMAIL" => Some(Function::Email),
-            "OCR" => Some(Function::Ocr),
-            "FILE" => Some(Function::File),
+            "IMAGE" => Some(Self::Image),
+            "EMAIL" => Some(Self::Email),
+            "OCR" => Some(Self::Ocr),
+            "FILE" => Some(Self::File),
             _ => None,
         }
     }
 }
 
-/// Default listen port for button events; the device sends to HOST=<ip>:54925.
+/// Default listen port for button events; the device sends to `HOST=<ip>:54925`.
 pub const DEFAULT_LISTEN_PORT: u16 = 54925;
-/// Device-side registration lease in seconds (DURATION=...), hardcoded 360
+/// Device-side registration lease in seconds (`DURATION=...`), hardcoded 360
 /// by Brother; we refresh well before it.
 pub const DURATION: u32 = 360;
 
+/// The daemon's configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// PC name shown on the device panel (USER=... in the registration).
+    /// PC name shown on the device panel (`USER=...` in the registration).
     pub name: String,
     /// The scanner's IP address (where the SNMP registration is sent).
     pub device_ip: String,
     /// The scanner's SNMP port (always 161 for a real device; configurable so
     /// tests can use an unprivileged port with the mock device).
     pub device_port: u16,
-    /// The host IP the device should send button events to (HOST=<ip>:<port>).
-    /// Must be reachable from the scanner; an empty value is why buttons stay
-    /// silent in issue #10.
+    /// The host IP the device should send button events to
+    /// (`HOST=<ip>:<port>`). Must be reachable from the scanner; an empty
+    /// value is why buttons stay silent in issue #10.
     pub host_ip: String,
     /// SNMP community (always "internal" on these devices).
     pub community: String,
-    /// Device-side registration lease in seconds (DURATION=...).
+    /// Device-side registration lease in seconds (`DURATION=...`).
     pub duration: u32,
     /// Seconds between re-registrations; kept below `duration`.
     pub keepalive_interval: u32,
-    /// UDP port we listen on for button events (54925 unless SKEY_LISTEN_PORT
+    /// UDP port we listen on for button events (54925 unless `SKEY_LISTEN_PORT`
     /// says otherwise, for tests).
     pub listen_port: u16,
     /// Command to run for each enabled function (shell command line).
@@ -89,13 +97,14 @@ pub struct Config {
 
 impl Config {
     /// From the process environment.
-    pub fn from_env() -> Config {
-        Config::from_lookup(|key| std::env::var(key).ok())
+    #[must_use]
+    pub fn from_env() -> Self {
+        Self::from_lookup(|key| std::env::var(key).ok())
     }
 
     /// From any lookup of the variable names (the environment, or a map in
     /// tests). Empty values count as unset.
-    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Config {
+    pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
         let env_or = |key: &str, default: &str| {
             get(key)
                 .filter(|v| !v.is_empty())
@@ -124,7 +133,7 @@ impl Config {
             env_or("SKEY_FILE", &format!("{base}/scantofile.py")),
         );
 
-        Config {
+        Self {
             name: env_or("NAME", "Scanner"),
             device_ip: env_or("IPADDRESS", ""),
             device_port,

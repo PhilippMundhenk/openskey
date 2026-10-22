@@ -2,12 +2,13 @@
 //!
 //! A re-registration while the device is busy with a scan can stall its
 //! feeder, and it must not coincide with paper in the ADF (observed with the
-//! stock daemon, BrotherScannerDocker #107/#117). The host marks a scan in
-//! progress by touching one or more files (`SKEY_HOLD_FILES`, colon-separated
-//! paths; the container uses its `STATUS_SCAN` / `STATUS_WAITING` files).
-//! While any of them exists and is younger than [`HOLD_MAX_AGE`], the
-//! keepalive skips the refresh. An older file was left behind by a crash and
-//! is ignored.
+//! stock daemon, `BrotherScannerDocker` #107/#117).
+//!
+//! The host marks a scan in progress by touching one or more files
+//! (`SKEY_HOLD_FILES`, colon-separated paths; the container uses its
+//! `STATUS_SCAN` / `STATUS_WAITING` files). While any of them exists and is
+//! younger than [`HOLD_MAX_AGE`], the keepalive skips the refresh. An older
+//! file was left behind by a crash and is ignored.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,6 +27,7 @@ pub fn parse_hold_files(value: &str) -> Vec<PathBuf> {
 }
 
 /// The hold files from the environment.
+#[must_use]
 pub fn hold_files_from_env() -> Vec<PathBuf> {
     std::env::var("SKEY_HOLD_FILES")
         .map(|v| parse_hold_files(&v))
@@ -33,16 +35,17 @@ pub fn hold_files_from_env() -> Vec<PathBuf> {
 }
 
 /// True when `path` exists and was modified less than `max_age` ago.
+#[must_use]
 pub fn is_fresh(path: &Path, max_age: Duration) -> bool {
     std::fs::metadata(path)
         .and_then(|m| m.modified())
         .ok()
         .and_then(|t| t.elapsed().ok())
-        .map(|age| age < max_age)
-        .unwrap_or(false)
+        .is_some_and(|age| age < max_age)
 }
 
 /// The first hold file that currently holds, if any.
+#[must_use]
 pub fn holding(files: &[PathBuf]) -> Option<&PathBuf> {
     files.iter().find(|p| is_fresh(p, HOLD_MAX_AGE))
 }
@@ -70,7 +73,7 @@ mod tests {
             ]
         );
         assert_eq!(parse_hold_files(" : /a : "), vec![PathBuf::from("/a")]);
-        assert!(parse_hold_files("").is_empty());
+        assert_eq!(parse_hold_files(""), [] as [std::path::PathBuf; 0]);
     }
 
     #[test]

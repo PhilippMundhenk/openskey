@@ -1,7 +1,7 @@
 //! Building and sending the Scan-to-PC registration.
 //!
 //! The device keeps a PC in its "Scan to PC" menu for `DURATION` seconds after
-//! an SNMPv1 set-request writes the registration string into OID
+//! an `SNMPv1` set-request writes the registration string into OID
 //! `1.3.6.1.4.1.2435.2.3.9.2.11.1.1.0` (one binding per function). We re-send
 //! it before the lease expires. Each send uses a fresh UDP socket that is
 //! dropped (closed) immediately, so there is no descriptor leak.
@@ -20,6 +20,7 @@ pub const REQUEST_ID: i64 = 201;
 
 /// The registration value string for one function, e.g.
 /// `TYPE=BR;BUTTON=SCAN;USER="Scanner";FUNC=IMAGE;HOST=10.0.30.10:54925;APPNUM=1;DURATION=360;BRID=;`
+#[must_use]
 pub fn registration_string(cfg: &Config, func: Function) -> String {
     format!(
         "TYPE=BR;BUTTON=SCAN;USER=\"{user}\";FUNC={func};HOST={host}:{port};APPNUM={appnum};DURATION={duration};BRID=;",
@@ -32,7 +33,8 @@ pub fn registration_string(cfg: &Config, func: Function) -> String {
     )
 }
 
-/// The full SNMPv1 set-request packet that registers all four functions.
+/// The full `SNMPv1` set-request packet that registers all four functions.
+#[must_use]
 pub fn build_registration(cfg: &Config) -> Vec<u8> {
     let varbinds: Vec<Vec<u8>> = Function::all()
         .iter()
@@ -44,9 +46,16 @@ pub fn build_registration(cfg: &Config) -> Vec<u8> {
     snmp::message(&cfg.community, snmp::TAG_SET_REQUEST, REQUEST_ID, &varbinds)
 }
 
-/// Send the registration once to `device_ip:161`. The socket is created and
-/// dropped within this function; nothing is leaked even if the device never
-/// answers.
+/// Send the registration once to `device_ip:161`.
+///
+/// The socket is created and dropped within this function; nothing is leaked
+/// even if the device never answers (a timeout is not an error).
+///
+/// # Errors
+///
+/// `IPADDRESS` or `HOST_IPADDRESS` is not configured (the device would have
+/// nowhere to send button events), or the socket could not be opened or
+/// written.
 pub fn register_once(cfg: &Config) -> io::Result<()> {
     if cfg.device_ip.is_empty() {
         return Err(io::Error::new(
@@ -142,7 +151,7 @@ mod tests {
 
     #[test]
     fn register_once_reaches_the_mock_device() {
-        let server = crate::mock::MockServer::start(false);
+        let server = crate::mock::MockServer::start(false).unwrap();
         let mut c = cfg();
         c.device_ip = "127.0.0.1".into();
         c.device_port = server.port;

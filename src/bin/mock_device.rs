@@ -7,7 +7,7 @@
 //! are answered from a canned table of the status objects `openskey status`
 //! reads (the registration object answers `TRUE` only once a registration
 //! was received, so `openskey selftest` is meaningful); an unknown object gets
-//! SNMPv1 `noSuchName`, like a real agent. `--registered` starts registered,
+//! `SNMPv1` `noSuchName`, like a real agent. `--registered` starts registered,
 //! `--run-seconds N` stops after N seconds.
 //!
 //! `--button FUNC [--host IP:PORT] [--params P1,P2,P3,P4]`: send a synthetic
@@ -77,13 +77,14 @@ fn run(args: &[String]) -> i32 {
     }
 
     let port: u16 = match arg_value(args, "--port") {
-        Some(value) => match value.parse() {
-            Ok(port) => port,
-            Err(_) => {
+        Some(value) => {
+            if let Ok(port) = value.parse() {
+                port
+            } else {
                 eprintln!("mock-device: --port needs a port number, not {value:?}\n{USAGE}");
                 return 2;
             }
-        },
+        }
         None => 161,
     };
     let registered = args.iter().any(|a| a == "--registered");
@@ -104,7 +105,7 @@ fn run(args: &[String]) -> i32 {
         requests: 0,
     };
     if let Err(e) = mock::serve(&socket, &mut state, &stop, deadline, &mut |line| {
-        println!("{line}")
+        println!("{line}");
     }) {
         eprintln!("mock-device: {e}");
         return 1;

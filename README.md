@@ -98,6 +98,25 @@ below 95 %:
 cargo llvm-cov --workspace --all-targets --fail-under-lines 95
 ```
 
+## Code quality
+
+Every one of these is a CI gate, not a convention:
+
+- **No `unsafe`** (`#![forbid(unsafe_code)]` via `Cargo.toml`), no dependencies.
+- **Clippy pedantic and nursery** are enabled in `Cargo.toml` and run with
+  warnings as errors; `cargo fmt --check`.
+- **Every public item is documented** (`missing_docs`) and `cargo doc` runs
+  with warnings as errors.
+- **MSRV: Rust 1.75**, declared in `Cargo.toml` and tested in CI.
+- **Security audit**: `cargo audit` (RustSec advisories) and `cargo deny`
+  (advisories, licenses, duplicate versions, unknown sources; `deny.toml`).
+- **Robustness**: `tests/robustness.rs` feeds thousands of random and
+  mutated datagrams through every parser and the mock's handler; nothing may
+  panic. The BER decoder checks every length and addition, the OID encoder
+  never panics on decoded input, and the duplicate table is bounded.
+- **Coverage above 95 %** of lines (`cargo llvm-cov`).
+- Dependabot keeps the GitHub Actions current.
+
 ## Run
 
 Configuration is by environment variable, compatible with the container:

@@ -1,32 +1,55 @@
-//! Minimal SNMPv1 / BER encoder and decoder, just enough for the Brother
-//! Scan-to-PC registration (an SNMPv1 set-request with OCTET STRING bindings)
-//! and for reading the device's status objects (get-request / get-response).
+//! Minimal `SNMPv1` / BER encoder and decoder.
 //!
-//! Reverse-engineered from packet captures (BrotherScannerDocker issue #10) and
+//! Just enough for the Brother Scan-to-PC registration (an `SNMPv1`
+//! set-request with OCTET STRING bindings) and for reading the device's
+//! status objects (get-request / get-response).
+//!
+//! Reverse-engineered from packet captures (`BrotherScannerDocker` issue #10) and
 //! the `brscan-skey` binary's strings; no Brother code is used here. See
 //! PROTOCOL.md for the wire format.
 
 // --- BER tags ---------------------------------------------------------------
+/// BER tag of an INTEGER.
 pub const TAG_INTEGER: u8 = 0x02;
+/// BER tag of an OCTET STRING.
 pub const TAG_OCTET_STRING: u8 = 0x04;
+/// BER tag of NULL (the value of a get-request binding).
 pub const TAG_NULL: u8 = 0x05;
+/// BER tag of an OBJECT IDENTIFIER.
 pub const TAG_OID: u8 = 0x06;
+/// BER tag of a SEQUENCE.
 pub const TAG_SEQUENCE: u8 = 0x30;
+/// SNMP PDU tag of a get-request.
 pub const TAG_GET_REQUEST: u8 = 0xA0;
+/// SNMP PDU tag of a get-response.
 pub const TAG_GET_RESPONSE: u8 = 0xA2;
+/// SNMP PDU tag of a set-request.
 pub const TAG_SET_REQUEST: u8 = 0xA3;
 // Application types a device may return in a get-response.
+/// SNMP application type `IpAddress`.
 pub const TAG_IP_ADDRESS: u8 = 0x40;
+/// SNMP application type `Counter32`.
 pub const TAG_COUNTER32: u8 = 0x41;
+/// SNMP application type `Gauge32`.
 pub const TAG_GAUGE32: u8 = 0x42;
+/// SNMP application type `TimeTicks`.
 pub const TAG_TIMETICKS: u8 = 0x43;
+
+/// The longest BER length the decoder accepts, in bytes of the length field:
+/// a `usize` can hold no more, and no SNMP datagram comes anywhere near it.
+const MAX_LENGTH_BYTES: usize = std::mem::size_of::<usize>();
 
 /// A decoded variable-binding value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
+    /// INTEGER, and the unsigned application integers (`Counter32`,
+    /// `Gauge32`, `TimeTicks`).
     Int(i64),
+    /// OCTET STRING, and `IpAddress` (four raw bytes).
     OctetString(Vec<u8>),
+    /// OBJECT IDENTIFIER, as its arcs.
     Oid(Vec<u32>),
+    /// NULL (a get-request binding's placeholder).
     Null,
     /// Any other tag, kept as raw bytes so nothing is silently lost.
     Other(u8, Vec<u8>),
@@ -34,27 +57,29 @@ pub enum Value {
 
 impl Value {
     /// The value as UTF-8 text, for OCTET STRING objects (lossy).
+    #[must_use]
     pub fn as_text(&self) -> Option<String> {
         match self {
-            Value::OctetString(b) => Some(String::from_utf8_lossy(b).into_owned()),
+            Self::OctetString(b) => Some(String::from_utf8_lossy(b).into_owned()),
             _ => None,
         }
     }
 
     /// The value as raw bytes, for OCTET STRING objects (e.g. the packed
     /// Brother `brInfo*` blobs).
+    #[must_use]
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
-            Value::OctetString(b) => Some(b),
-            Value::Other(_, b) => Some(b),
+            Self::OctetString(b) | Self::Other(_, b) => Some(b),
             _ => None,
         }
     }
 
-    /// The value as an integer, for INTEGER / Counter32 / Gauge32 / TimeTicks.
-    pub fn as_int(&self) -> Option<i64> {
+    /// The value as an integer, for INTEGER / Counter32 / Gauge32 / `TimeTicks`.
+    #[must_use]
+    pub const fn as_int(&self) -> Option<i64> {
         match self {
-            Value::Int(v) => Some(*v),
+            Self::Int(v) => Some(*v),
             _ => None,
         }
     }
@@ -63,31 +88,44 @@ impl Value {
 /// A decoded SNMP message.
 #[derive(Debug, Clone)]
 pub struct Message {
+    /// The community string (`internal` on Brother devices).
     pub community: String,
+    /// The PDU type: one of the `TAG_*_REQUEST` / `TAG_GET_RESPONSE` tags.
     pub pdu_tag: u8,
+    /// The request id the other side echoes back.
     pub request_id: i64,
+    /// The error status, 0 when the request succeeded.
     pub error_status: i64,
+    /// The variable bindings, as (OID arcs, value) pairs.
     pub varbinds: Vec<(Vec<u32>, Value)>,
 }
 
 /// BER definite length encoding.
+#[must_use]
 pub fn encode_len(len: usize) -> Vec<u8> {
-    if len < 0x80 {
-        vec![len as u8]
-    } else {
-        let mut bytes = Vec::new();
-        let mut n = len;
-        while n > 0 {
-            bytes.insert(0, (n & 0xff) as u8);
-            n >>= 8;
+    // Short form: one byte below 0x80.
+    if let Ok(short) = u8::try_from(len) {
+        if short < 0x80 {
+            return vec![short];
         }
-        let mut out = vec![0x80 | bytes.len() as u8];
-        out.extend_from_slice(&bytes);
-        out
     }
+    // Long form: 0x80 | number of length bytes, then the length big-endian
+    // without leading zeros (at most `size_of::<usize>()` bytes, so the count
+    // always fits the 7 bits).
+    let bytes: Vec<u8> = len
+        .to_be_bytes()
+        .iter()
+        .copied()
+        .skip_while(|&b| b == 0)
+        .collect();
+    let count = u8::try_from(bytes.len()).unwrap_or(0x7f);
+    let mut out = vec![0x80 | count];
+    out.extend_from_slice(&bytes);
+    out
 }
 
 /// A tag-length-value element.
+#[must_use]
 pub fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
     out.extend_from_slice(&encode_len(content.len()));
@@ -95,6 +133,8 @@ pub fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Encode an INTEGER.
+#[must_use]
 pub fn integer(value: i64) -> Vec<u8> {
     // Minimal two's-complement big-endian, keeping a leading sign byte correct.
     let mut bytes = value.to_be_bytes().to_vec();
@@ -106,15 +146,20 @@ pub fn integer(value: i64) -> Vec<u8> {
     tlv(TAG_INTEGER, &bytes)
 }
 
+/// Encode an OCTET STRING.
+#[must_use]
 pub fn octet_string(value: &[u8]) -> Vec<u8> {
     tlv(TAG_OCTET_STRING, value)
 }
 
+/// Encode NULL.
+#[must_use]
 pub fn null() -> Vec<u8> {
     tlv(TAG_NULL, &[])
 }
 
 /// Encode a decoded [`Value`] back to BER, for building get-responses.
+#[must_use]
 pub fn encode_value(value: &Value) -> Vec<u8> {
     match value {
         Value::Int(v) => integer(*v),
@@ -126,10 +171,18 @@ pub fn encode_value(value: &Value) -> Vec<u8> {
 }
 
 /// Encode an object identifier (e.g. `[1,3,6,1,4,1,2435,...]`).
+///
+/// Never panics: fewer than two arcs give an empty (invalid but harmless)
+/// OID body, and a first pair that does not fit one byte is saturated, so a
+/// value decoded from an untrusted packet can always be re-encoded.
+#[must_use]
 pub fn oid(arcs: &[u32]) -> Vec<u8> {
-    assert!(arcs.len() >= 2, "OID needs at least two arcs");
-    let mut body = vec![(arcs[0] * 40 + arcs[1]) as u8];
-    for &arc in &arcs[2..] {
+    let [first, second, rest @ ..] = arcs else {
+        return tlv(TAG_OID, &[]);
+    };
+    let head = first.saturating_mul(40).saturating_add(*second);
+    let mut body = vec![u8::try_from(head).unwrap_or(u8::MAX)];
+    for &arc in rest {
         body.extend_from_slice(&base128(arc));
     }
     tlv(TAG_OID, &body)
@@ -137,37 +190,46 @@ pub fn oid(arcs: &[u32]) -> Vec<u8> {
 
 /// Base-128, big-endian, continuation bit on every byte but the last.
 fn base128(mut v: u32) -> Vec<u8> {
-    let mut bytes = vec![(v & 0x7f) as u8];
+    // Every byte is masked to seven bits before the narrowing, so nothing is
+    // lost.
+    #[allow(clippy::cast_possible_truncation)]
+    let low = |v: u32| (v & 0x7f) as u8;
+    let mut bytes = vec![low(v)];
     v >>= 7;
     while v > 0 {
-        bytes.insert(0, ((v & 0x7f) as u8) | 0x80);
+        bytes.insert(0, low(v) | 0x80);
         v >>= 7;
     }
     bytes
 }
 
+/// Encode a SEQUENCE around already-encoded content.
+#[must_use]
 pub fn sequence(content: &[u8]) -> Vec<u8> {
     tlv(TAG_SEQUENCE, content)
 }
 
 /// One `VarBind`: SEQUENCE { OID, value }.
+#[must_use]
 pub fn varbind(oid_arcs: &[u32], value: &[u8]) -> Vec<u8> {
     let mut inner = oid(oid_arcs);
     inner.extend_from_slice(value);
     sequence(&inner)
 }
 
-/// SNMPv1 error-status `noSuchName`: the requested object does not exist.
+/// `SNMPv1` error-status `noSuchName`: the requested object does not exist.
 pub const ERR_NO_SUCH_NAME: i64 = 2;
 
-/// Assemble a full SNMPv1 message.
-/// `pdu_tag` is e.g. `TAG_SET_REQUEST`; `varbinds` are already-encoded VarBind elements.
+/// Assemble a full `SNMPv1` message.
+/// `pdu_tag` is e.g. `TAG_SET_REQUEST`; `varbinds` are already-encoded `VarBind` elements.
+#[must_use]
 pub fn message(community: &str, pdu_tag: u8, request_id: i64, varbinds: &[Vec<u8>]) -> Vec<u8> {
     message_with_error(community, pdu_tag, request_id, 0, 0, varbinds)
 }
 
 /// Like [`message`], with an explicit error-status / error-index (used by the
 /// mock device to answer `noSuchName` like a real agent does).
+#[must_use]
 pub fn message_with_error(
     community: &str,
     pdu_tag: u8,
@@ -194,7 +256,8 @@ pub fn message_with_error(
     sequence(&body)
 }
 
-/// Build an SNMPv1 get-request for one or more OIDs (values are NULL).
+/// Build an `SNMPv1` get-request for one or more OIDs (values are NULL).
+#[must_use]
 pub fn get_request(community: &str, request_id: i64, oids: &[&[u32]]) -> Vec<u8> {
     let varbinds: Vec<Vec<u8>> = oids.iter().map(|o| varbind(o, &null())).collect();
     message(community, TAG_GET_REQUEST, request_id, &varbinds)
@@ -202,45 +265,45 @@ pub fn get_request(community: &str, request_id: i64, oids: &[&[u32]]) -> Vec<u8>
 
 // --- Decoder ----------------------------------------------------------------
 
-/// Read one TLV at `data[pos]`. Returns (tag, value_slice, next_pos).
+/// Read one TLV at `data[pos]`. Returns (tag, `value_slice`, `next_pos`).
+///
+/// Every length is checked against the buffer and every addition is
+/// checked, so a crafted datagram can only make this return `None`.
+#[must_use]
 pub fn read_tlv(data: &[u8], pos: usize) -> Option<(u8, &[u8], usize)> {
-    if pos + 2 > data.len() {
-        return None;
-    }
-    let tag = data[pos];
-    let first = data[pos + 1];
+    let tag = *data.get(pos)?;
+    let first = *data.get(pos.checked_add(1)?)?;
     let (len, len_bytes) = if first < 0x80 {
-        (first as usize, 1usize)
+        (usize::from(first), 1usize)
     } else {
-        let n = (first & 0x7f) as usize;
-        if pos + 2 + n > data.len() {
+        let n = usize::from(first & 0x7f);
+        if n == 0 || n > MAX_LENGTH_BYTES {
+            // indefinite length (not used by SNMP) or absurdly long
             return None;
         }
-        let mut l = 0usize;
-        for i in 0..n {
-            l = (l << 8) | data[pos + 2 + i] as usize;
-        }
-        (l, 1 + n)
+        let first_len_byte = pos.checked_add(2)?;
+        let bytes = data.get(first_len_byte..first_len_byte.checked_add(n)?)?;
+        let len = bytes.iter().fold(0usize, |l, &b| (l << 8) | usize::from(b));
+        (len, n.checked_add(1)?)
     };
-    let start = pos + 1 + len_bytes;
-    let end = start + len;
-    if end > data.len() {
-        return None;
-    }
-    Some((tag, &data[start..end], end))
+    let start = pos.checked_add(1)?.checked_add(len_bytes)?;
+    let end = start.checked_add(len)?;
+    let value = data.get(start..end)?;
+    Some((tag, value, end))
 }
 
 /// Decode an OID value (the content of an OID TLV) back to its arcs.
+#[must_use]
 pub fn decode_oid(body: &[u8]) -> Vec<u32> {
     let mut arcs = Vec::new();
     if body.is_empty() {
         return arcs;
     }
-    arcs.push(body[0] as u32 / 40);
-    arcs.push(body[0] as u32 % 40);
+    arcs.push(u32::from(body[0]) / 40);
+    arcs.push(u32::from(body[0]) % 40);
     let mut v = 0u32;
     for &b in &body[1..] {
-        v = (v << 7) | (b & 0x7f) as u32;
+        v = (v << 7) | u32::from(b & 0x7f);
         if b & 0x80 == 0 {
             arcs.push(v);
             v = 0;
@@ -258,7 +321,7 @@ fn decode_int(body: &[u8]) -> i64 {
     }
     let mut v = if body[0] & 0x80 != 0 { -1i64 } else { 0i64 };
     for &b in body {
-        v = (v << 8) | b as i64;
+        v = (v << 8) | i64::from(b);
     }
     v
 }
@@ -275,6 +338,7 @@ fn decode_value(tag: u8, body: &[u8]) -> Value {
 
 /// Fully decode an SNMP message into its community, PDU type, ids and the list
 /// of (OID, value) bindings. Returns None if the structure is not as expected.
+#[must_use]
 pub fn decode_message(data: &[u8]) -> Option<Message> {
     let (TAG_SEQUENCE, msg, _) = read_tlv(data, 0)? else {
         return None;
@@ -315,6 +379,7 @@ pub fn decode_message(data: &[u8]) -> Option<Message> {
 
 /// Extract the (OID, OCTET STRING value) pairs from an SNMP message, for tests
 /// and the mock device. Returns an empty vector if the structure is unexpected.
+#[must_use]
 pub fn extract_string_varbinds(data: &[u8]) -> Vec<(Vec<u32>, String)> {
     let Some(msg) = decode_message(data) else {
         return Vec::new();
@@ -431,7 +496,7 @@ mod tests {
                 .len(),
             4
         );
-        assert!(decode_oid(&[]).is_empty());
+        assert_eq!(decode_oid(&[]), [] as [u32; 0]);
     }
 
     #[test]
@@ -450,6 +515,9 @@ mod tests {
         // long-form length that claims more than there is
         assert!(read_tlv(&[0x04, 0x82, 0x01, 0x00, 0x41], 0).is_none());
         assert!(read_tlv(&[0x04, 0x82], 0).is_none());
-        assert!(extract_string_varbinds(b"junk").is_empty());
+        assert_eq!(
+            extract_string_varbinds(b"junk"),
+            [] as [(std::vec::Vec<u32>, std::string::String); 0]
+        );
     }
 }

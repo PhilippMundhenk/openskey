@@ -30,7 +30,10 @@ fn work_dir(name: &str) -> PathBuf {
 fn openskey(args: &[&str], env: &[(&str, &str)]) -> (i32, String) {
     let out = Command::new(OPENSKEY)
         .args(args)
-        .envs(env.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+        .envs(
+            env.iter()
+                .map(|(k, v)| (String::from(*k), String::from(*v))),
+        )
         .output()
         .unwrap();
     let text = format!(
@@ -84,7 +87,10 @@ fn full_flow_against_the_mock_device() {
     let log_path = dir.join("skey.log");
     let log = fs::File::create(&log_path).unwrap();
     let mut daemon = Command::new(OPENSKEY)
-        .envs(base.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+        .envs(
+            base.iter()
+                .map(|(k, v)| (String::from(*k), String::from(*v))),
+        )
         .env("HOST_IPADDRESS", "127.0.0.1")
         .env("NAME", "bintest")
         .env("KEEPALIVE_INTERVAL", "1")

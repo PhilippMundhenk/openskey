@@ -1,5 +1,7 @@
-//! The daemon's logic, one step at a time, so the `openskey` binary is only
-//! the loops around it: deduplicating and classifying button events, running
+//! The daemon's logic, one step at a time.
+//!
+//! The `openskey` binary is only the loops around it. The steps are:
+//! deduplicating and classifying button events, running
 //! the scan command with the event in its environment, one keepalive cycle
 //! (hold check, registration, self-test), and the `status` / `selftest`
 //! reports.
@@ -14,9 +16,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
-/// The device resends each button press (same SEQ) until the scan starts;
+/// The device resends each button press (same SEQ) about two seconds later;
 /// a repeat of the same (REGID, SEQ) within this window is dropped.
 pub const DEDUP_WINDOW: Duration = Duration::from_secs(20);
+
+/// The most (REGID, SEQ) pairs remembered at once, so a flood of distinct
+/// events cannot grow the table without bound.
+pub const DEDUP_CAPACITY: usize = 1024;
 
 /// Remembers recent (REGID, SEQ) pairs.
 pub struct Dedup {
@@ -25,8 +31,10 @@ pub struct Dedup {
 }
 
 impl Dedup {
-    pub fn new(window: Duration) -> Dedup {
-        Dedup {
+    /// An empty table that forgets a pair after `window`.
+    #[must_use]
+    pub const fn new(window: Duration) -> Self {
+        Self {
             window,
             recent: VecDeque::new(),
         }
@@ -50,6 +58,9 @@ impl Dedup {
         if self.recent.iter().any(|&(k, _)| k == key) {
             return true;
         }
+        if self.recent.len() >= DEDUP_CAPACITY {
+            self.recent.pop_front();
+        }
         self.recent.push_back((key, now));
         false
     }
@@ -57,18 +68,22 @@ impl Dedup {
 
 impl Default for Dedup {
     fn default() -> Self {
-        Dedup::new(DEDUP_WINDOW)
+        Self::new(DEDUP_WINDOW)
     }
 }
 
 /// What to do with a datagram received on the button port.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
+    /// A new button press: run its scan command.
     Dispatch(ButtonEvent),
+    /// The device's resend of a press already dispatched: ignore it.
     Duplicate(ButtonEvent),
+    /// Not a button event (logged in full so a new model can be characterised).
     Unrecognised,
 }
 
+/// Parse a datagram and decide what to do with it.
 pub fn classify(dedup: &mut Dedup, datagram: &[u8]) -> Decision {
     match button::parse(datagram) {
         Some(ev) => {
@@ -83,6 +98,7 @@ pub fn classify(dedup: &mut Dedup, datagram: &[u8]) -> Decision {
 }
 
 /// The first four bytes as hex, for the log line.
+#[must_use]
 pub fn header_hex(datagram: &[u8]) -> String {
     datagram[..datagram.len().min(4)]
         .iter()
@@ -93,13 +109,19 @@ pub fn header_hex(datagram: &[u8]) -> String {
 
 /// A datagram as contiguous hex plus a printable-ASCII view, for capturing a
 /// real device's button events.
+#[must_use]
 pub fn hex_dump(data: &[u8]) -> String {
-    let hex: String = data.iter().map(|b| format!("{b:02x}")).collect();
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(data.len() * 2);
+    for b in data {
+        // writing to a String cannot fail
+        let _ = write!(hex, "{b:02x}");
+    }
     let ascii: String = data
         .iter()
         .map(|&b| {
             if (0x20..0x7f).contains(&b) {
-                b as char
+                char::from(b)
             } else {
                 '.'
             }
@@ -109,13 +131,14 @@ pub fn hex_dump(data: &[u8]) -> String {
 }
 
 /// The environment the scan command gets: everything the device sent.
+#[must_use]
 pub fn event_env(ev: &ButtonEvent) -> Vec<(String, String)> {
     let mut env = Vec::new();
     if let Some(func) = ev.func {
         env.push(("SKEY_FUNC".into(), func.name().into()));
         env.push((
             "SKEY_APPNUM".into(),
-            ev.appnum.unwrap_or(func.appnum()).to_string(),
+            ev.appnum.unwrap_or_else(|| func.appnum()).to_string(),
         ));
     }
     env.push(("SKEY_PARAMS".into(), ev.raw.clone()));
@@ -141,9 +164,16 @@ pub fn event_env(ev: &ButtonEvent) -> Vec<(String, String)> {
 /// argument.
 pub const DEVICE_ARG: &str = "brother4:net1;dev0";
 
-/// Run the configured command for the event and wait for it: `sh -c
-/// <command> -- <device> <name>` with the event in the environment. Returns
-/// the function name and the exit status, or why nothing ran.
+/// Run the configured command for the event and wait for it.
+///
+/// The command runs as `sh -c <command> -- <device> <name>` with the event in
+/// the environment (see [`event_env`]). Returns the function name and the
+/// exit status.
+///
+/// # Errors
+///
+/// The event names no known function, no command is configured for it, or
+/// the command could not be started; the message says which.
 pub fn run_command(cfg: &Config, ev: &ButtonEvent) -> Result<(String, ExitStatus), String> {
     let func = ev.func.ok_or("event without a known FUNC, ignored")?;
     let command = cfg
@@ -179,6 +209,7 @@ pub enum Keepalive {
 }
 
 /// One keepalive cycle: hold check, registration, optional self-test.
+#[must_use]
 pub fn keepalive_once(cfg: &Config, verify: bool, holds: &[PathBuf]) -> Keepalive {
     if let Some(file) = hold::holding(holds) {
         return Keepalive::Held(file.clone());
@@ -193,6 +224,7 @@ pub fn keepalive_once(cfg: &Config, verify: bool, holds: &[PathBuf]) -> Keepaliv
 }
 
 /// The log line for a keepalive outcome.
+#[must_use]
 pub fn describe_keepalive(cfg: &Config, outcome: &Keepalive) -> String {
     match outcome {
         Keepalive::Held(file) => format!(
@@ -214,30 +246,33 @@ pub fn describe_keepalive(cfg: &Config, outcome: &Keepalive) -> String {
     }
 }
 
-/// SKEY_SELFTEST: on unless "0" / "false".
-pub fn selftest_enabled_from(value: Option<String>) -> bool {
-    value
-        .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-        .unwrap_or(true)
+/// `SKEY_SELFTEST`: on unless "0" / "false".
+#[must_use]
+pub fn selftest_enabled_from(value: Option<&str>) -> bool {
+    value.map_or(true, |v| v != "0" && !v.eq_ignore_ascii_case("false"))
 }
 
-/// SKEY_DEBUG: full-datagram capture logging when set to anything but "0".
-pub fn debug_enabled_from(value: Option<String>) -> bool {
-    value.map(|v| v != "0" && !v.is_empty()).unwrap_or(false)
+/// `SKEY_DEBUG`: full-datagram capture logging when set to anything but "0".
+#[must_use]
+pub fn debug_enabled_from(value: Option<&str>) -> bool {
+    value.is_some_and(|v| v != "0" && !v.is_empty())
 }
 
-/// SKEY_RUN_SECONDS: run the daemon (or the mock) for this long and then exit
-/// normally; for captures and tests. None: run forever.
-pub fn run_seconds_from(value: Option<String>) -> Option<u64> {
+/// `SKEY_RUN_SECONDS`: run the daemon (or the mock) for this long and then
+/// exit normally; for captures and tests. `None`: run forever.
+#[must_use]
+pub fn run_seconds_from(value: Option<&str>) -> Option<u64> {
     value.and_then(|v| v.trim().parse().ok()).filter(|&s| s > 0)
 }
 
-/// SKEY_SCAN_DELAY_MS: pause between a button event and starting the scan
-/// command. Brother's daemon waits 100 ms (`usleep(100000)` before
-/// `system()`), which is the default.
+/// The default of `SKEY_SCAN_DELAY_MS`: Brother's daemon waits 100 ms
+/// (`usleep(100000)` before `system()`).
 pub const DEFAULT_SCAN_DELAY_MS: u64 = 100;
 
-pub fn scan_delay_from(value: Option<String>) -> Duration {
+/// `SKEY_SCAN_DELAY_MS`: the pause between a button event and starting the
+/// scan command.
+#[must_use]
+pub fn scan_delay_from(value: Option<&str>) -> Duration {
     Duration::from_millis(
         value
             .and_then(|v| v.trim().parse().ok())
@@ -247,6 +282,7 @@ pub fn scan_delay_from(value: Option<String>) -> Duration {
 
 /// `openskey status`: the JSON report and the exit code (0 when the device
 /// answered, 2 when it did not or the configuration is unusable).
+#[must_use]
 pub fn status_report(cfg: &Config) -> (String, i32) {
     match status::query(cfg) {
         Ok(st) => {
@@ -259,6 +295,7 @@ pub fn status_report(cfg: &Config) -> (String, i32) {
 
 /// `openskey selftest`: the message and the exit code (0 registered, 1 not
 /// registered, 2 no answer).
+#[must_use]
 pub fn selftest_report(cfg: &Config) -> (String, i32) {
     match status::registered(cfg) {
         Ok(Some(true)) => (
@@ -277,7 +314,11 @@ pub fn selftest_report(cfg: &Config) -> (String, i32) {
     }
 }
 
-/// Touch a hold file (used by tests and by `mock-device --hold`).
+/// Touch (create or empty) a hold file.
+///
+/// # Errors
+///
+/// The file could not be written.
 pub fn touch(path: &Path) -> std::io::Result<()> {
     std::fs::write(path, b"")
 }
@@ -397,7 +438,7 @@ mod tests {
 
     #[test]
     fn keepalive_holds_registers_and_verifies() {
-        let server = MockServer::start(false);
+        let server = MockServer::start(false).unwrap();
         let cfg = cfg_for(server.port, "127.0.0.1");
         let hold = std::env::temp_dir().join(format!("openskey-hold-{}", std::process::id()));
         touch(&hold).unwrap();
@@ -449,7 +490,7 @@ mod tests {
 
     #[test]
     fn reports_against_the_mock_and_against_nothing() {
-        let server = MockServer::start(false);
+        let server = MockServer::start(false).unwrap();
         let cfg = cfg_for(server.port, "127.0.0.1");
         let (msg, code) = selftest_report(&cfg);
         assert_eq!(code, 1);
@@ -483,26 +524,20 @@ mod tests {
     #[test]
     fn environment_switches() {
         assert!(selftest_enabled_from(None));
-        assert!(selftest_enabled_from(Some("1".into())));
-        assert!(!selftest_enabled_from(Some("0".into())));
-        assert!(!selftest_enabled_from(Some("False".into())));
+        assert!(selftest_enabled_from(Some("1")));
+        assert!(!selftest_enabled_from(Some("0")));
+        assert!(!selftest_enabled_from(Some("False")));
         assert!(!debug_enabled_from(None));
-        assert!(!debug_enabled_from(Some("".into())));
-        assert!(!debug_enabled_from(Some("0".into())));
-        assert!(debug_enabled_from(Some("1".into())));
+        assert!(!debug_enabled_from(Some("")));
+        assert!(!debug_enabled_from(Some("0")));
+        assert!(debug_enabled_from(Some("1")));
         assert_eq!(run_seconds_from(None), None);
-        assert_eq!(run_seconds_from(Some("0".into())), None);
-        assert_eq!(run_seconds_from(Some("abc".into())), None);
-        assert_eq!(run_seconds_from(Some(" 15 ".into())), Some(15));
+        assert_eq!(run_seconds_from(Some("0")), None);
+        assert_eq!(run_seconds_from(Some("abc")), None);
+        assert_eq!(run_seconds_from(Some(" 15 ")), Some(15));
         assert_eq!(scan_delay_from(None), Duration::from_millis(100));
-        assert_eq!(
-            scan_delay_from(Some("x".into())),
-            Duration::from_millis(100)
-        );
-        assert_eq!(scan_delay_from(Some("0".into())), Duration::ZERO);
-        assert_eq!(
-            scan_delay_from(Some(" 250 ".into())),
-            Duration::from_millis(250)
-        );
+        assert_eq!(scan_delay_from(Some("x")), Duration::from_millis(100));
+        assert_eq!(scan_delay_from(Some("0")), Duration::ZERO);
+        assert_eq!(scan_delay_from(Some(" 250 ")), Duration::from_millis(250));
     }
 }
