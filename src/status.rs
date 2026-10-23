@@ -15,10 +15,15 @@
 //!   Scan-to-PC button, supported (.1) and enabled (.2). This is the capability
 //!   the stock daemon probes on every registration (and leaks a socket doing).
 //!
+//! Text objects are decoded with the character set the device declares in
+//! the Printer MIB (`prtLocalizationCharacterSet`); Brother panels use HP
+//! Roman-8, see [`crate::charset`].
+//!
 //! Every field is optional: a model that lacks an object leaves it `null`.
 //! Each query opens one UDP socket that is dropped when the query returns, so
 //! a periodic poll cannot leak descriptors.
 
+use crate::charset::Charset;
 use crate::config::Config;
 use crate::registration::REG_OID;
 use crate::snmp::{self, Value};
@@ -26,6 +31,10 @@ use std::io;
 use std::net::UdpSocket;
 use std::time::Duration;
 
+/// Printer MIB `prtLocalizationCharacterSet` for the current localization:
+/// the IANA number of the character set of the text objects (2004 = HP
+/// Roman-8 on Brother devices).
+pub const OID_CHARSET: [u32; 13] = [1, 3, 6, 1, 2, 1, 43, 7, 1, 1, 4, 1, 1];
 /// MIB-II sysDescr; a Brother device reports its model family here.
 pub const OID_SYS_DESCR: [u32; 9] = [1, 3, 6, 1, 2, 1, 1, 1, 0];
 /// Serial number (`brInfoSerialNumber`).
@@ -145,6 +154,9 @@ struct Client {
     target: (String, u16),
     community: String,
     next_id: i64,
+    /// How the device's text objects are decoded; read from the device
+    /// (`OID_CHARSET`), Roman-8 until then and when it does not say.
+    charset: Charset,
 }
 
 impl Client {
@@ -162,6 +174,7 @@ impl Client {
             target: (cfg.device_ip.clone(), cfg.device_port),
             community: cfg.community.clone(),
             next_id: 1000,
+            charset: Charset::default(),
         })
     }
 
@@ -199,8 +212,12 @@ impl Client {
     }
 
     fn get_text(&mut self, oid: &[u32]) -> Option<String> {
+        let charset = self.charset;
         self.get(oid)
-            .and_then(|v| v.as_text())
+            .and_then(|v| match v {
+                Value::OctetString(bytes) => Some(charset.decode(&bytes)),
+                _ => None,
+            })
             .map(|t| {
                 t.trim_matches(|c: char| c == '\0' || c.is_whitespace())
                     .to_string()
@@ -248,6 +265,11 @@ pub fn query(cfg: &Config) -> io::Result<Status> {
         return Ok(st);
     };
     st.model = Some(model_from_sys_descr(&descr));
+    // The character set of the text objects, before any of them is read.
+    client.charset = client
+        .get(&OID_CHARSET)
+        .and_then(|v| v.as_int())
+        .map_or(Charset::Roman8, Charset::from_iana);
     st.registered = client.get_text(&REG_OID).map(|t| is_true(&t));
     st.serial = client.get_text(&OID_SERIAL);
     st.firmware = client.get_text(&OID_FIRMWARE);
@@ -392,6 +414,16 @@ mod tests {
             query(&cfg_for(unregistered.port)).unwrap().registered,
             Some(false)
         );
+    }
+
+    #[test]
+    fn the_display_line_is_decoded_with_the_declared_character_set() {
+        // the mock sends the display line as the real device does, in HP
+        // Roman-8 (0xCF for ü), and declares that set
+        let server = crate::mock::MockServer::start(true).unwrap();
+        let st = query(&cfg_for(server.port)).unwrap();
+        assert_eq!(st.display.as_deref(), Some("Scan:   drück"));
+        assert!(!st.to_json().contains('\u{FFFD}'));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! `mock-device` test harness; the binaries are only the loops around it.
 
 pub mod button;
+pub mod charset;
 pub mod config;
 pub mod daemon;
 pub mod hold;

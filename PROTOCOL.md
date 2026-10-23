@@ -177,6 +177,7 @@ published BROTHER-MIB:
 | serial number | `1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.1.0` | device serial |
 | firmware | `1.3.6.1.4.1.2435.2.3.9.4.2.1.5.5.17.0` | firmware version |
 | panel display | `1.3.6.1.4.1.2435.2.4.3.1240.3.2.1.5.1` | first line of the LCD |
+| `prtLocalizationCharacterSet` | `1.3.6.1.2.1.43.7.1.1.4.1.1` | Printer MIB: IANA number of the character set of the text objects. Brother panels use HP Roman-8 (2004): a German `drück` is sent as `64 72 CF 63 6B`, `0xCF` being `ü` in Roman-8 (`Ï` in Latin-1, invalid as UTF-8). openskey decodes with the declared set, Roman-8 when the device declares none it knows. |
 | `mcsNetScanner` | `1.3.6.1.4.1.2435.2.3.9.2.101.3.11.{1,2}` | network scanning supported (.1) / enabled (.2), INTEGER 1/0 |
 | `mcsNetSKy` | `1.3.6.1.4.1.2435.2.3.9.2.101.3.12.{1,2}` | the network Scan Key (Scan-to-PC button) supported / enabled |
 

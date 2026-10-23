@@ -142,7 +142,7 @@ jobs:
           grep -q '"model":"MFC-L2700DW"' status.json
           grep -q '"serial":"E73941F6N621420"' status.json
           grep -q '"firmware":"Y2309112149"' status.json
-          grep -q '"display":"Scan:' status.json
+          grep -q '"display":"Scan:   drück"' status.json  # Roman-8 0xCF decoded as ü
           grep -q '"net_scanner_supported":true' status.json
           grep -q '"scan_key_supported":true' status.json
           grep -q '"scan_key_enabled":true' status.json

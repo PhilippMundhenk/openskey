@@ -62,7 +62,12 @@ pub fn canned(oid: &[u32], registered: bool) -> Option<Value> {
         return text("Y2309112149");
     }
     if oid == status::OID_DISPLAY {
-        return text("Scan:   drück   ");
+        // As the live device sends it: HP Roman-8, 0xCF is ü (a German panel
+        // showing "Scan:   drück"). Not valid UTF-8 on purpose.
+        return Some(Value::OctetString(b"Scan:   dr\xCFck   ".to_vec()));
+    }
+    if oid == status::OID_CHARSET {
+        return Some(Value::Int(2004)); // IANA hp-roman8
     }
     // Capability flags exactly as the live device answers them: network
     // scanning and the network Scan Key both supported (.1) and enabled (.2).
