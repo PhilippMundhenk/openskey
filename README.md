@@ -75,7 +75,11 @@ are deliberately not exposed.
 ```
 
 `registered` is the self-test; `scan_key_*` says whether the device supports
-and has enabled the network Scan-to-PC key at all. The objects are listed in
+and has enabled the network Scan-to-PC key at all. Text objects are decoded
+with the character set the device declares (Printer MIB
+`prtLocalizationCharacterSet`); Brother panels use HP Roman-8, so a German
+`drück` arrives as `64 72 CF 63 6B` and is reported as `drück`, not as a
+replacement character. The objects are listed in
 [PROTOCOL.md](PROTOCOL.md), section 5. Each query opens one socket and closes
 it, so polling cannot leak.
 
