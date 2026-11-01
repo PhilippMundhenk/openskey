@@ -137,9 +137,10 @@ Every one of these is a CI gate, not a convention:
 
 ## Install
 
-Each [release](https://github.com/PhilippMundhenk/openskey/releases) carries
-static binaries (no glibc or other libraries needed) and Debian packages for
-three architectures, with a `SHA256SUMS` file:
+Each [release](https://github.com/PhilippMundhenk/openskey/releases) after
+v1.1 carries static binaries (no glibc or other libraries needed) and Debian
+packages for three architectures, with a `SHA256SUMS` file (v1.0 and v1.1 have
+an x86_64 binary for glibc only):
 
 | Architecture                     | Archive                                          | Debian package             |
 | -------------------------------- | ------------------------------------------------ | -------------------------- |
@@ -181,6 +182,7 @@ Configuration is by environment variable, compatible with the container:
 | `SKEY_RUN_SECONDS`  | exit normally after this many seconds (captures, tests) | forever |
 | `SKEY_SCAN_DELAY_MS`| pause between a button event and starting the scan command (the stock daemon waits 100 ms) | `100` |
 | `SKEY_DEVICE_PORT`  | the device's SNMP port (tests use the mock on 1161)  | `161`     |
+| `SKEY_COMMUNITY`    | SNMP community for the registration and the status reads (Brother devices use `internal`) | `internal` |
 | `SKEY_IMAGE` / `SKEY_OCR` / `SKEY_EMAIL` / `SKEY_FILE` | command per function   | container script paths |
 
 The command runs as `sh -c "<command>" -- <device> <name>` (the two positional
@@ -278,7 +280,9 @@ needs mirrored networking (`networkingMode=mirrored` in `.wslconfig`) or a
 forwarded UDP 54925, so the inbound event reaches the WSL instance. Press *Scan
 to File*, then *Image*, *Email*, *OCR* in turn; each prints a line like
 `openskey: CAPTURE 114 bytes from <ip>: <hex> | <ascii>`. Share those lines (one
-per button) to complete the parser.
+per button) in a
+[model report](https://github.com/PhilippMundhenk/openskey/issues/new?template=model-report.yml),
+see the call for support in #16.
 
 Alternatively, capture passively with `tcpdump` while the existing, working
 container is registered (no port conflict, works through NAT):
