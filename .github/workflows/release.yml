@@ -109,7 +109,7 @@ jobs:
           grep -q '"reachable":true' status.json
           grep -q '"model":"MFC-L2700DW"' status.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: openskey-${{ matrix.target }}
           path: upload/*
