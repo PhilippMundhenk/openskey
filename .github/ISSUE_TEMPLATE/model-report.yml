@@ -1,0 +1,58 @@
+name: Model report
+description: openskey (or brscan-skey) on a Brother model other than the MFC-L2700DW, working or not
+title: "Model report: <model>"
+labels: ["model report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. Every model seen on the wire makes openskey safer to use as the default.
+        Only the MFC-L2700DW is confirmed so far (#16).
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      placeholder: e.g. MFC-L2710DW
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+      description: The `firmware` field of `openskey status`, or from the device's web page.
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: What works with openskey?
+      options:
+        - Everything (the PC shows on the panel, the buttons start scans)
+        - The PC shows on the panel, but the buttons do nothing
+        - The PC does not show on the panel
+        - Not tried with openskey, capture from brscan-skey only
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `openskey status`
+      render: json
+  - type: textarea
+    id: capture
+    attributes:
+      label: Button capture
+      description: |
+        Run openskey with `SKEY_DEBUG=1` and press each Scan-to-PC function once; paste the
+        `openskey: CAPTURE ...` lines. Or attach a packet capture of one registration and one
+        button press: `sudo tcpdump -i any -w brother.pcap 'udp port 161 or udp port 54925'`
+        (a capture of Brother's own brscan-skey is just as useful, especially from devices
+        that register over HTTP, #17).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Log lines, how the panel looks, which functions you use.
