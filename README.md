@@ -56,6 +56,20 @@ Working and tested, against a live MFC-L2700DW and in CI against the mock:
 Scope: this is a **scanner** tool. Printer objects (toner, drum, page counters)
 are deliberately not exposed.
 
+### Models
+
+| Model        | Firmware      | Registration | Buttons | Status |
+| ------------ | ------------- | ------------ | ------- | ------ |
+| MFC-L2700DW  | Y2309112149   | SNMP, works  | work    | works  |
+
+Other Brother devices that register over SNMP very likely work the same way,
+but only this one has been seen on the wire. Newer firmware registers over
+HTTP instead, which openskey does not implement yet (#17). If you have another
+model, please open a
+[model report](https://github.com/PhilippMundhenk/openskey/issues/new?template=model-report.yml)
+with a capture (see [Capturing from a real scanner](#capturing-from-a-real-scanner)),
+whether it works or not.
+
 ## Commands
 
 | Command             | Does                                                                     | Exit code                              |
