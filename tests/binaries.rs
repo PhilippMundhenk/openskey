@@ -71,11 +71,19 @@ fn full_flow_against_the_mock_device() {
         .stderr(Stdio::from(mock_log))
         .spawn()
         .unwrap();
-    sleep(Duration::from_millis(300));
     let base = [
         ("IPADDRESS", "127.0.0.1"),
         ("SKEY_DEVICE_PORT", device_port.as_str()),
     ];
+    // Wait until the mock answers instead of sleeping a fixed time: under
+    // coverage instrumentation it can take longer than 300 ms to bind, and a
+    // self-test sent before that gets "no answer" (exit 2) instead of "not
+    // registered" (exit 1). A status query only reads, it registers nothing.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while openskey(&["status"], &base).0 != 0 {
+        assert!(Instant::now() < deadline, "the mock device never answered");
+        sleep(Duration::from_millis(100));
+    }
 
     // nothing registered yet
     let (code, text) = openskey(&["selftest"], &base);
