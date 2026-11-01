@@ -149,6 +149,39 @@ arguments the stock daemon passes) with the event in its environment:
 IPADDRESS=192.168.1.50 HOST_IPADDRESS=192.168.1.10 NAME=Scanner ./target/release/openskey
 ```
 
+## Run as a systemd service
+
+On a plain Linux host, openskey replaces `brscan-skey` as a service. The files
+are in [`packaging/`](packaging): the unit, a `sysusers.d` entry for the
+dedicated `openskey` user, and an example configuration.
+
+```sh
+sudo install -m 0755 openskey /usr/bin/openskey
+sudo install -m 0644 packaging/openskey.service /etc/systemd/system/
+sudo install -D -m 0644 packaging/openskey.sysusers /usr/lib/sysusers.d/openskey.conf
+sudo systemd-sysusers openskey.conf
+sudo install -D -m 0640 -g openskey packaging/openskey.env /etc/openskey/openskey.env
+sudoedit /etc/openskey/openskey.env      # IPADDRESS, HOST_IPADDRESS, NAME, SKEY_*
+sudo systemctl daemon-reload
+sudo systemctl enable --now openskey
+journalctl -u openskey -f
+```
+
+Stop Brother's daemon first (`brscan-skey -t`, and remove it from autostart):
+both listen on UDP 54925. The scan commands run as the `openskey` user, so it
+needs write access to wherever they put the scans; for a USB scanner add it to
+the `scanner` group with `sudo systemctl edit openskey`:
+
+```ini
+[Service]
+SupplementaryGroups=scanner
+```
+
+The unit restarts openskey if it exits, and `packaging/test-systemd.sh` (run in
+CI) checks it end to end: it registers against the mock device, runs as its
+own user, dispatches a button press to the configured command and comes back
+after being killed.
+
 ## Testing without a scanner
 
 In one terminal, run the mock device as an SNMP agent on an unprivileged port:
