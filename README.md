@@ -121,6 +121,35 @@ Every one of these is a CI gate, not a convention:
 - **Coverage above 95 %** of lines (`cargo llvm-cov`).
 - Dependabot keeps the GitHub Actions current.
 
+## Install
+
+Each [release](https://github.com/PhilippMundhenk/openskey/releases) carries
+static binaries (no glibc or other libraries needed) and Debian packages for
+three architectures, with a `SHA256SUMS` file:
+
+| Architecture                     | Archive                                          | Debian package             |
+| -------------------------------- | ------------------------------------------------ | -------------------------- |
+| x86_64 (PCs, most NAS)           | `openskey-<tag>-x86_64-unknown-linux-musl.tar.gz` | `openskey_<ver>_amd64.deb` |
+| aarch64 (Raspberry Pi 3/4/5 on a 64-bit OS) | `openskey-<tag>-aarch64-unknown-linux-musl.tar.gz` | `openskey_<ver>_arm64.deb` |
+| armv7 (Raspberry Pi on a 32-bit OS) | `openskey-<tag>-armv7-unknown-linux-musleabihf.tar.gz` | `openskey_<ver>_armhf.deb` |
+
+On Debian, Ubuntu or Raspberry Pi OS the package is the easy way. It installs
+`openskey`, `openskey-mock-device`, the systemd unit, the `openskey` user and
+`/etc/openskey/openskey.env`, but does not start the service, because the
+configuration needs the scanner's address first:
+
+```sh
+sudo apt install ./openskey_<ver>_amd64.deb
+sudoedit /etc/openskey/openskey.env      # IPADDRESS, HOST_IPADDRESS, NAME, SKEY_*
+sudo systemctl enable --now openskey
+journalctl -u openskey -f
+```
+
+The archive holds the two binaries, the documentation and the files in
+`packaging/` for installing the service by hand (see
+[Run as a systemd service](#run-as-a-systemd-service)). Or build from source,
+see [Build and test](#build-and-test).
+
 ## Run
 
 Configuration is by environment variable, compatible with the container:
@@ -151,9 +180,11 @@ IPADDRESS=192.168.1.50 HOST_IPADDRESS=192.168.1.10 NAME=Scanner ./target/release
 
 ## Run as a systemd service
 
-On a plain Linux host, openskey replaces `brscan-skey` as a service. The files
-are in [`packaging/`](packaging): the unit, a `sysusers.d` entry for the
-dedicated `openskey` user, and an example configuration.
+On a plain Linux host, openskey replaces `brscan-skey` as a service. The
+Debian package sets it up (see [Install](#install)); by hand, the files are in
+[`packaging/`](packaging) and in every release archive: the unit, a
+`sysusers.d` entry for the dedicated `openskey` user, and an example
+configuration.
 
 ```sh
 sudo install -m 0755 openskey /usr/bin/openskey
@@ -178,9 +209,11 @@ SupplementaryGroups=scanner
 ```
 
 The unit restarts openskey if it exits, and `packaging/test-systemd.sh` (run in
-CI) checks it end to end: it registers against the mock device, runs as its
-own user, dispatches a button press to the configured command and comes back
-after being killed.
+CI, by hand and from the installed Debian package) checks it end to end: it
+registers against the mock device, runs as its own user, dispatches a button
+press to the configured command and comes back after being killed. The
+release workflow also runs every architecture's binary under emulation
+against the mock device before anything is published.
 
 ## Testing without a scanner
 

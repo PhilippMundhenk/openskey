@@ -2,20 +2,36 @@
 # End-to-end test of the systemd unit against the mock device. Runs as root on
 # a host whose PID 1 is systemd (the CI runner, or a systemd container):
 #   sudo packaging/test-systemd.sh <dir with openskey and mock-device>
-# Installs the unit, the sysusers entry and an environment file, starts the
-# service, and checks it registers, runs as its own user, dispatches a button
+# Installs the unit, the sysusers entry and an environment file (with
+# INSTALLED=1 it checks the files the Debian package installed instead), starts
+# the service, and checks it registers, runs as its own user, dispatches a button
 # press to its command, and comes back after it is killed.
 set -eu
 bin="${1:?usage: test-systemd.sh <dir with openskey and mock-device>}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
-install -m 0755 "$bin/openskey" /usr/bin/openskey
-install -m 0644 "$here/openskey.service" /etc/systemd/system/openskey.service
-install -D -m 0644 "$here/openskey.sysusers" /usr/lib/sysusers.d/openskey.conf
-systemd-sysusers openskey.conf
+if [ "${INSTALLED:-}" = 1 ]; then
+  # installed by the Debian package: check what it put in place
+  unit=/lib/systemd/system/openskey.service
+  [ -f "$unit" ] || unit=/usr/lib/systemd/system/openskey.service
+  test -x /usr/bin/openskey
+  test -x /usr/bin/openskey-mock-device
+  cmp "$here/openskey.service" "$unit"
+  test -f /usr/lib/sysusers.d/openskey.conf
+  test -f /etc/openskey/openskey.env
+  if systemctl is-enabled --quiet openskey; then
+    echo "FAILED: the package enabled the service before it is configured" >&2; exit 1
+  fi
+  echo "ok: package files in place, service not enabled"
+else
+  install -m 0755 "$bin/openskey" /usr/bin/openskey
+  install -m 0644 "$here/openskey.service" /etc/systemd/system/openskey.service
+  install -D -m 0644 "$here/openskey.sysusers" /usr/lib/sysusers.d/openskey.conf
+  systemd-sysusers openskey.conf
+  install -d /etc/openskey
+fi
 id openskey
 
-install -d /etc/openskey
 # The example file must be a valid EnvironmentFile; the test values follow it.
 cp "$here/openskey.env" /etc/openskey/openskey.env
 cat >> /etc/openskey/openskey.env <<'ENV'
@@ -26,7 +42,7 @@ NAME=systemd-test
 KEEPALIVE_INTERVAL=3
 SKEY_FILE='echo "DISPATCHED device=$1 name=$2 func=$SKEY_FUNC p1=$SKEY_P1"'
 ENV
-systemd-analyze verify /etc/systemd/system/openskey.service
+systemd-analyze verify "${unit:-/etc/systemd/system/openskey.service}"
 
 "$bin/mock-device" --port 1161 >/tmp/mock.log 2>&1 &
 mock=$!

@@ -1,6 +1,6 @@
 [package]
 name = "openskey"
-version = "0.1.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.75"
 description = "An open, leak-free reimplementation of Brother's brscan-skey Scan-to-PC key daemon"
@@ -24,6 +24,32 @@ path = "src/main.rs"
 [[bin]]
 name = "mock-device"
 path = "src/bin/mock_device.rs"
+
+# Debian package (cargo deb), built by the release workflow for each
+# architecture. The service is installed but neither enabled nor started:
+# /etc/openskey/openskey.env needs the scanner and host addresses first.
+[package.metadata.deb]
+maintainer = "Philipp Mundhenk <philipp@mundhenk.org>"
+copyright = "Philipp Mundhenk"
+section = "net"
+priority = "optional"
+depends = "systemd | systemd-standalone-sysusers"
+extended-description = """\
+Registers this host with a Brother multifunction device as a Scan-to-PC \
+destination, keeps the registration alive, receives the front-panel button \
+presses and runs a scan command for each. An open replacement for Brother's \
+brscan-skey daemon, without its socket leak. Also reports the scanner's state \
+over SNMP (openskey status) and checks the registration (openskey selftest)."""
+assets = [
+    ["target/release/openskey", "usr/bin/", "755"],
+    ["target/release/mock-device", "usr/bin/openskey-mock-device", "755"],
+    ["packaging/openskey.env", "etc/openskey/openskey.env", "640"],
+    ["README.md", "usr/share/doc/openskey/README.md", "644"],
+    ["PROTOCOL.md", "usr/share/doc/openskey/PROTOCOL.md", "644"],
+]
+conf-files = ["/etc/openskey/openskey.env"]
+maintainer-scripts = "packaging/debian/"
+systemd-units = { unit-name = "openskey", unit-scripts = "packaging/", enable = false, start = false }
 
 [profile.release]
 lto = true
