@@ -1,0 +1,45 @@
+# systemd unit for openskey, the open Scan-to-PC key daemon for Brother scanners.
+#
+# Installed by the Debian package to /lib/systemd/system/openskey.service.
+# By hand: see "Run as a systemd service" in the README.
+#
+# Configuration: /etc/openskey/openskey.env (IPADDRESS, HOST_IPADDRESS, NAME
+# and the scan commands). Logs: journalctl -u openskey
+
+[Unit]
+Description=openskey Scan-to-PC key daemon for Brother scanners
+Documentation=https://github.com/PhilippMundhenk/openskey
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/openskey/openskey.env
+ExecStart=/usr/bin/openskey
+# A dedicated system user (created from /usr/lib/sysusers.d/openskey.conf).
+# The scan commands run as this user: give it write access to the scan
+# directory, and add it to the "scanner" group for USB devices
+# (systemctl edit openskey: [Service] SupplementaryGroups=scanner).
+User=openskey
+Group=openskey
+Restart=on-failure
+RestartSec=5
+
+# Hardening that leaves the scan commands room to work: /usr, /boot and /etc
+# are read-only, the rest of the file system is as the user's rights allow.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

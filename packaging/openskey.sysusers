@@ -1,0 +1,3 @@
+# sysusers.d(5): the system user openskey runs as.
+# Installed to /usr/lib/sysusers.d/openskey.conf; apply with systemd-sysusers.
+u openskey - "openskey Scan-to-PC daemon" /var/lib/openskey /usr/sbin/nologin
