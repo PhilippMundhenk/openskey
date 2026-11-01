@@ -1,49 +1,162 @@
 name: Release
 
+# Static (musl) binaries and Debian packages for x86_64, aarch64 and armv7.
+# Every pull request builds and tests them; a v* tag also publishes them as a
+# GitHub release with SHA256SUMS. Cut a release with
+#   git tag v1.2 && git push origin v1.2
+# The package version comes from the tag (v1.2 -> 1.2).
+
 on:
   push:
     tags: ['v*']
+  pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # Rust's bundled linker links the static musl binaries for every target; no
+  # cross toolchain or container is needed (the crate has no C dependencies).
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: rust-lld
+  CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER: rust-lld
 
 jobs:
   build:
-    name: build and publish the Linux binary
+    name: build ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            platform: linux/amd64
+          - target: aarch64-unknown-linux-musl
+            platform: linux/arm64
+          - target: armv7-unknown-linux-musleabihf
+            platform: linux/arm/v7
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Build release binaries
-        run: cargo build --release --bins
+      - name: Install musl tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
 
-      - name: Package
-        id: package
+      - name: Version
+        id: version
         run: |
           set -euo pipefail
-          ref='${{ github.ref_name }}'
-          name="openskey-${ref}-x86_64-unknown-linux-gnu"
-          mkdir -p "dist/$name"
-          cp target/release/openskey target/release/mock-device "dist/$name/"
-          cp README.md PROTOCOL.md LICENSE "dist/$name/" 2>/dev/null || true
-          tar -C dist -czf "$name.tar.gz" "$name"
-          echo "archive=$name.tar.gz" >> "$GITHUB_OUTPUT"
+          crate=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            # Cargo.toml should say the same (v1.2 matches 1.2 or 1.2.0)
+            if [[ "$crate" != "$version" && "$crate" != "$version.0" ]]; then
+              echo "::warning::tag $GITHUB_REF_NAME but Cargo.toml says $crate; the packages use $version"
+            fi
+            name="openskey-$GITHUB_REF_NAME-${{ matrix.target }}"
+          else
+            version="$crate"
+            name="openskey-v$crate-dev-${{ matrix.target }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: openskey-x86_64-linux
-          path: ${{ steps.package.outputs.archive }}
+      - name: Build
+        run: cargo build --release --bins --target ${{ matrix.target }}
 
-      - name: Publish release (on tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      - name: Package (tar.gz and .deb)
+        run: |
+          set -euo pipefail
+          name='${{ steps.version.outputs.name }}'
+          out="target/${{ matrix.target }}/release"
+          file "$out/openskey"
+          mkdir -p "dist/$name/packaging" upload
+          cp "$out/openskey" "$out/mock-device" README.md PROTOCOL.md LICENSE "dist/$name/"
+          cp packaging/openskey.service packaging/openskey.env packaging/openskey.sysusers "dist/$name/packaging/"
+          tar -C dist -czf "upload/$name.tar.gz" "$name"
+          cargo deb --target ${{ matrix.target }} --no-build --no-strip \
+            --deb-version '${{ steps.version.outputs.version }}' -o upload/
+          ls -la upload
+          dpkg-deb -I upload/*.deb | grep -E 'Package|Version|Architecture|Depends'
+          dpkg-deb -c upload/*.deb
+
+      - name: Run the binary on its architecture against the mock device
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged tonistiigi/binfmt --install all >/dev/null
+          docker run --rm --platform '${{ matrix.platform }}' \
+            -v "$PWD/target/${{ matrix.target }}/release:/b:ro" busybox:1.36 sh -c \
+            '/b/mock-device --port 1161 & sleep 1; IPADDRESS=127.0.0.1 SKEY_DEVICE_PORT=1161 /b/openskey status' \
+            | tee status.json
+          grep -q '"reachable":true' status.json
+          grep -q '"model":"MFC-L2700DW"' status.json
+
+      - uses: actions/upload-artifact@v4
         with:
-          files: ${{ steps.package.outputs.archive }}
+          name: openskey-${{ matrix.target }}
+          path: upload/*
+          if-no-files-found: error
+
+  deb-install:
+    name: install the .deb and run the service (amd64)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: openskey-x86_64-unknown-linux-musl
+          path: upload
+      - name: Install the package, then test the service it installed
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y ./upload/openskey_*_amd64.deb
+          mkdir bin && tar -xzf upload/*.tar.gz -C bin --strip-components=1
+          sudo INSTALLED=1 sh packaging/test-systemd.sh bin
+      - name: Remove and purge cleanly
+        run: |
+          set -euo pipefail
+          sudo apt-get purge -y openskey
+          test ! -e /usr/bin/openskey
+          test ! -e /etc/openskey/openskey.env
+
+  release:
+    name: publish the GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, deb-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: openskey-*
+          merge-multiple: true
+          path: upload
+      - name: Checksums
+        working-directory: upload
+        run: sha256sum * | tee SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
           generate_release_notes: true
+          files: upload/*

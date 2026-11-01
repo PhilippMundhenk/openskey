@@ -1,0 +1,5 @@
+#!/bin/sh
+# Debian maintainer script. cargo-deb fills in the generated sections: the
+# openskey user from the sysusers.d entry, and the systemd unit hooks.
+set -e
+#DEBHELPER#
