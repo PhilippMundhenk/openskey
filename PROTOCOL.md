@@ -62,6 +62,10 @@ The device replies with an SNMP `get-response` echoing the bindings.
 The device does **not** renew on its own and `brscan-skey` only re-registers on
 daemon start, a button press or power-on, so the entry lapses `DURATION` seconds
 after the last event. A periodic re-send (well under 360 s) keeps it present.
+`openskey` re-sends every `KEEPALIVE_INTERVAL` (120 s), holds the re-send back
+while the host marks a scan in progress, and still re-sends during a scan when
+the lease has less than 60 s left or the device no longer lists the entry
+(read back with a get-request, which the device answers at any time).
 
 > Note: in the stock binary every re-registration runs a firmware-probe that
 > opens a UDP socket and never closes it, leaking one descriptor per cycle until

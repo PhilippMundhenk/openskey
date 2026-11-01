@@ -196,6 +196,39 @@ pub fn run_command(cfg: &Config, ev: &ButtonEvent) -> Result<(String, ExitStatus
     Ok((func.name().to_string(), status))
 }
 
+/// How often the keepalive looks again while a hold file is fresh.
+///
+/// Instead of waiting a whole `KEEPALIVE_INTERVAL`, so the refresh follows
+/// the scan at once (issue #14: consecutive jobs chain their holds, and a
+/// refresh that waits a full interval after the last one leaves the panel
+/// without the Scan-to-PC entry for up to that long).
+pub const HOLD_RECHECK: Duration = Duration::from_secs(10);
+
+/// A hold is overridden when less than this is left of the lease: a scan must
+/// never cost the registration, and the device drops the entry `DURATION`
+/// seconds after the last refresh (PROTOCOL.md).
+pub const LEASE_GRACE: Duration = Duration::from_secs(60);
+
+/// Why a refresh went out although a hold file is fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Override {
+    /// The lease would run out before the next look, or nothing has been
+    /// registered since the daemon started.
+    LeaseEnding,
+    /// The device no longer lists the registration (a read-only self-test
+    /// said so), whatever the reason: without a refresh the key is dead.
+    NotListed,
+}
+
+impl Override {
+    const fn text(self) -> &'static str {
+        match self {
+            Self::LeaseEnding => "the lease is about to run out",
+            Self::NotListed => "the device no longer lists the registration",
+        }
+    }
+}
+
 /// One keepalive cycle's outcome.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Keepalive {
@@ -204,23 +237,95 @@ pub enum Keepalive {
     /// Registered; the self-test result when it ran (Some(true) = the device
     /// lists us, Some(false) = it does not, None = no answer or not run).
     Registered(Option<bool>),
+    /// Registered although the hold file is fresh, for the given reason; the
+    /// self-test result as in `Registered`.
+    Forced(PathBuf, Override, Option<bool>),
     /// The registration could not be sent.
     Failed(String),
 }
 
-/// One keepalive cycle: hold check, registration, optional self-test.
-#[must_use]
-pub fn keepalive_once(cfg: &Config, verify: bool, holds: &[PathBuf]) -> Keepalive {
-    if let Some(file) = hold::holding(holds) {
-        return Keepalive::Held(file.clone());
+impl Keepalive {
+    /// A registration was sent (the lease starts over).
+    #[must_use]
+    pub const fn sent(&self) -> bool {
+        matches!(self, Self::Registered(_) | Self::Forced(..))
     }
+
+    /// A scan is in progress: look again after [`HOLD_RECHECK`], not after a
+    /// whole interval.
+    #[must_use]
+    pub const fn under_hold(&self) -> bool {
+        matches!(self, Self::Held(_) | Self::Forced(..))
+    }
+
+    /// Something is wrong: the registration could not be sent, or the device
+    /// says it does not list us right after it was sent.
+    #[must_use]
+    pub const fn is_warning(&self) -> bool {
+        matches!(
+            self,
+            Self::Failed(_) | Self::Registered(Some(false)) | Self::Forced(_, _, Some(false))
+        )
+    }
+}
+
+/// One keepalive cycle: hold check, registration, optional self-test.
+///
+/// `registered_ago` is the time since the last registration was sent (`None`:
+/// none yet). A fresh hold file holds the refresh back, except when the lease
+/// is about to run out or, with `verify`, when the device no longer lists the
+/// registration: then it goes out anyway. The read during a hold is a plain
+/// SNMP get, which the device answers without side effects (the container's
+/// status poll does the same while scans run).
+#[must_use]
+pub fn keepalive_once(
+    cfg: &Config,
+    verify: bool,
+    holds: &[PathBuf],
+    registered_ago: Option<Duration>,
+) -> Keepalive {
+    let Some(file) = hold::holding(holds) else {
+        return refresh(cfg, verify, None);
+    };
+    let lease = Duration::from_secs(u64::from(cfg.duration));
+    let ending = registered_ago.map_or(true, |ago| ago + LEASE_GRACE >= lease);
+    if ending {
+        return refresh(cfg, verify, Some((file.clone(), Override::LeaseEnding)));
+    }
+    if verify && status::registered(cfg).ok().flatten() == Some(false) {
+        return refresh(cfg, verify, Some((file.clone(), Override::NotListed)));
+    }
+    Keepalive::Held(file.clone())
+}
+
+/// Send the registration and, with `verify`, read it back.
+fn refresh(cfg: &Config, verify: bool, forced: Option<(PathBuf, Override)>) -> Keepalive {
     if let Err(e) = registration::register_once(cfg) {
         return Keepalive::Failed(e.to_string());
     }
-    if !verify {
-        return Keepalive::Registered(None);
+    let verified = if verify {
+        status::registered(cfg).ok().flatten()
+    } else {
+        None
+    };
+    match forced {
+        Some((file, why)) => Keepalive::Forced(file, why, verified),
+        None => Keepalive::Registered(verified),
     }
-    Keepalive::Registered(status::registered(cfg).ok().flatten())
+}
+
+/// "registered Scan-to-PC for ..., <how the self-test went>".
+fn registered_text(cfg: &Config, verified: Option<bool>) -> String {
+    let name = &cfg.name;
+    match verified {
+        Some(true) => format!("registered Scan-to-PC for {name:?}, registration verified"),
+        Some(false) => {
+            format!("registered Scan-to-PC for {name:?}, WARNING: device reports no registration")
+        }
+        None => {
+            format!("registered Scan-to-PC for {name:?} (not verified: no answer from the device)")
+        }
+    }
 }
 
 /// The log line for a keepalive outcome.
@@ -228,20 +333,18 @@ pub fn keepalive_once(cfg: &Config, verify: bool, holds: &[PathBuf]) -> Keepaliv
 pub fn describe_keepalive(cfg: &Config, outcome: &Keepalive) -> String {
     match outcome {
         Keepalive::Held(file) => format!(
-            "openskey: scan in progress ({}), registration refresh skipped",
+            "openskey: scan in progress ({}), registration refresh held back",
             file.display()
         ),
-        Keepalive::Registered(Some(true)) => format!(
-            "openskey: registered Scan-to-PC for {:?}, registration verified",
-            cfg.name
-        ),
-        Keepalive::Registered(Some(false)) => format!(
-            "openskey: registered Scan-to-PC for {:?}, WARNING: device reports no registration",
-            cfg.name
-        ),
-        Keepalive::Registered(None) => {
-            format!("openskey: registered Scan-to-PC for {:?}", cfg.name)
+        Keepalive::Registered(verified) => {
+            format!("openskey: {}", registered_text(cfg, *verified))
         }
+        Keepalive::Forced(file, why, verified) => format!(
+            "openskey: scan in progress ({}) but {}: {}",
+            file.display(),
+            why.text(),
+            registered_text(cfg, *verified)
+        ),
         Keepalive::Failed(e) => format!("openskey: registration failed: {e}"),
     }
 }
@@ -438,43 +541,130 @@ mod tests {
 
     #[test]
     fn keepalive_holds_registers_and_verifies() {
-        let server = MockServer::start(false).unwrap();
+        // the device lists us already, the lease is fresh
+        let server = MockServer::start(true).unwrap();
         let cfg = cfg_for(server.port, "127.0.0.1");
         let hold = std::env::temp_dir().join(format!("openskey-hold-{}", std::process::id()));
         touch(&hold).unwrap();
         let holds = vec![hold.clone()];
+        let fresh = Some(Duration::from_secs(1));
         assert_eq!(
-            keepalive_once(&cfg, true, &holds),
+            keepalive_once(&cfg, true, &holds, fresh),
             Keepalive::Held(hold.clone())
         );
-        assert!(describe_keepalive(&cfg, &Keepalive::Held(hold.clone())).contains("skipped"));
+        assert_eq!(
+            keepalive_once(&cfg, false, &holds, fresh),
+            Keepalive::Held(hold.clone())
+        );
+        let outcome = Keepalive::Held(hold.clone());
+        assert!(describe_keepalive(&cfg, &outcome).contains("held back"));
+        assert!(outcome.under_hold() && !outcome.sent() && !outcome.is_warning());
         std::fs::remove_file(&hold).unwrap();
 
         assert_eq!(
-            keepalive_once(&cfg, false, &holds),
+            keepalive_once(&cfg, false, &holds, None),
             Keepalive::Registered(None)
         );
         assert_eq!(
-            keepalive_once(&cfg, true, &holds),
+            keepalive_once(&cfg, true, &holds, fresh),
             Keepalive::Registered(Some(true))
         );
-        assert!(describe_keepalive(&cfg, &Keepalive::Registered(Some(true))).contains("verified"));
-        assert!(describe_keepalive(&cfg, &Keepalive::Registered(Some(false))).contains("WARNING"));
-        assert!(describe_keepalive(&cfg, &Keepalive::Registered(None)).contains("registered"));
+        let ok = Keepalive::Registered(Some(true));
+        assert!(describe_keepalive(&cfg, &ok).contains("registration verified"));
+        assert!(ok.sent() && !ok.under_hold() && !ok.is_warning());
+        let bad = Keepalive::Registered(Some(false));
+        assert!(describe_keepalive(&cfg, &bad).contains("WARNING"));
+        assert!(bad.sent() && bad.is_warning());
+        let unverified = Keepalive::Registered(None);
+        assert!(describe_keepalive(&cfg, &unverified).contains("not verified: no answer"));
+        assert!(unverified.sent() && !unverified.is_warning());
         let state = server.stop();
         assert!(state.registered);
         assert!(state.requests >= 3);
     }
 
     #[test]
+    fn a_hold_is_overridden_when_the_lease_ends_or_the_device_dropped_us() {
+        let hold =
+            std::env::temp_dir().join(format!("openskey-hold-override-{}", std::process::id()));
+        touch(&hold).unwrap();
+        let holds = vec![hold.clone()];
+
+        // nothing registered since the start (e.g. the daemon was restarted
+        // during a scan): the hold does not stop the first registration
+        let server = MockServer::start(false).unwrap();
+        let cfg = cfg_for(server.port, "127.0.0.1");
+        let outcome = keepalive_once(&cfg, true, &holds, None);
+        assert_eq!(
+            outcome,
+            Keepalive::Forced(hold.clone(), Override::LeaseEnding, Some(true))
+        );
+        assert!(outcome.sent() && outcome.under_hold() && !outcome.is_warning());
+        let line = describe_keepalive(&cfg, &outcome);
+        assert!(line.contains("scan in progress"), "{line}");
+        assert!(line.contains("lease is about to run out"), "{line}");
+        assert!(line.contains("registration verified"), "{line}");
+
+        // the lease is nearly over: refreshed despite the hold
+        let lease = Duration::from_secs(u64::from(cfg.duration));
+        let ending = lease.saturating_sub(LEASE_GRACE);
+        assert_eq!(
+            keepalive_once(&cfg, false, &holds, Some(ending)),
+            Keepalive::Forced(hold.clone(), Override::LeaseEnding, None)
+        );
+        // plenty of lease left and the device lists us: held
+        let plenty = ending.saturating_sub(Duration::from_secs(1));
+        assert_eq!(
+            keepalive_once(&cfg, true, &holds, Some(plenty)),
+            Keepalive::Held(hold.clone())
+        );
+        assert!(server.stop().registered);
+
+        // the device dropped the entry while a scan runs (fresh lease or not):
+        // the self-test notices and the refresh goes out anyway
+        let server = MockServer::start(false).unwrap();
+        let cfg = cfg_for(server.port, "127.0.0.1");
+        let outcome = keepalive_once(&cfg, true, &holds, Some(Duration::from_secs(5)));
+        assert_eq!(
+            outcome,
+            Keepalive::Forced(hold.clone(), Override::NotListed, Some(true))
+        );
+        assert!(describe_keepalive(&cfg, &outcome).contains("no longer lists"));
+        // without the self-test the daemon cannot know, so it holds
+        let server2 = MockServer::start(false).unwrap();
+        let cfg2 = cfg_for(server2.port, "127.0.0.1");
+        assert_eq!(
+            keepalive_once(&cfg2, false, &holds, Some(Duration::from_secs(5))),
+            Keepalive::Held(hold.clone())
+        );
+        assert!(!server2.stop().registered);
+        assert!(server.stop().registered);
+
+        let warning = Keepalive::Forced(hold.clone(), Override::NotListed, Some(false));
+        assert!(warning.is_warning());
+        assert!(describe_keepalive(&cfg, &warning).contains("WARNING"));
+        std::fs::remove_file(&hold).unwrap();
+    }
+
+    #[test]
     fn keepalive_reports_a_registration_that_cannot_be_sent() {
         let cfg = cfg_for(1, "");
-        let outcome = keepalive_once(&cfg, true, &[]);
+        let outcome = keepalive_once(&cfg, true, &[], None);
         let Keepalive::Failed(reason) = &outcome else {
             panic!("expected a failure: {outcome:?}");
         };
         assert!(reason.contains("HOST_IPADDRESS"));
         assert!(describe_keepalive(&cfg, &outcome).contains("registration failed"));
+        assert!(outcome.is_warning() && !outcome.sent() && !outcome.under_hold());
+        // the same under a hold whose lease is ending
+        let hold =
+            std::env::temp_dir().join(format!("openskey-hold-failed-{}", std::process::id()));
+        touch(&hold).unwrap();
+        assert!(matches!(
+            keepalive_once(&cfg, true, std::slice::from_ref(&hold), None),
+            Keepalive::Failed(_)
+        ));
+        std::fs::remove_file(&hold).unwrap();
     }
 
     #[test]
@@ -485,7 +675,24 @@ mod tests {
         let port = free.local_addr().unwrap().port();
         drop(free);
         let cfg = cfg_for(port, "127.0.0.1");
-        assert_eq!(keepalive_once(&cfg, true, &[]), Keepalive::Registered(None));
+        assert_eq!(
+            keepalive_once(&cfg, true, &[], None),
+            Keepalive::Registered(None)
+        );
+        // no answer during a hold is not "not listed": the hold holds
+        let hold =
+            std::env::temp_dir().join(format!("openskey-hold-silent-{}", std::process::id()));
+        touch(&hold).unwrap();
+        assert_eq!(
+            keepalive_once(
+                &cfg,
+                true,
+                std::slice::from_ref(&hold),
+                Some(Duration::from_secs(5))
+            ),
+            Keepalive::Held(hold.clone())
+        );
+        std::fs::remove_file(&hold).unwrap();
     }
 
     #[test]
