@@ -132,7 +132,7 @@ Configuration is by environment variable, compatible with the container:
 | `HOST_IPADDRESS`    | this host's IP the device sends button events to     | required  |
 | `KEEPALIVE_INTERVAL`| seconds between re-registrations (< 360)              | `120`     |
 | `SKEY_SELFTEST`     | read the registration back after each refresh        | `true`    |
-| `SKEY_HOLD_FILES`   | colon-separated files; while one exists and is younger than 10 minutes (a scan in progress), the refresh is skipped | none |
+| `SKEY_HOLD_FILES`   | colon-separated files; while one exists and is younger than 10 minutes (a scan in progress), the refresh is held back and looked at again every 10 s. It goes out anyway when the device no longer lists the registration or the lease is about to run out, so a long or jammed scan never leaves the panel without the entry | none |
 | `SKEY_LISTEN_PORT`  | the button-event port (the device sends to 54925; tests use another) | `54925` |
 | `SKEY_DEBUG`        | log every button datagram in full (hex + ASCII)      | off       |
 | `SKEY_RUN_SECONDS`  | exit normally after this many seconds (captures, tests) | forever |

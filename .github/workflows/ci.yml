@@ -124,11 +124,17 @@ jobs:
             NAME=CI KEEPALIVE_INTERVAL=2 "$BIN/openskey" > skey.log 2>&1 &
           sleep 2
 
-          # While the host marks a scan in progress, the refresh is skipped.
+          # While the host marks a scan in progress, the refresh is held back
+          # (the mock still lists us, the lease is fresh).
           touch STATUS_WAITING
           sleep 3
-          grep -q 'scan in progress' skey.log
+          grep -q 'scan in progress.*held back' skey.log
           rm STATUS_WAITING
+          # ... and follows the scan within HOLD_RECHECK, not a whole interval.
+          sleep 12
+          grep -q 'scan over, the registration refresh was held back for' skey.log
+          # The steady state is quiet: the identical outcome is not logged again.
+          test "$(grep -c 'registration verified' skey.log)" -le 3
 
           # Self-test from a separate process: the device now lists us.
           "$BIN/openskey" selftest | tee selftest.log

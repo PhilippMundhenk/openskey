@@ -7,8 +7,13 @@
 //! The host marks a scan in progress by touching one or more files
 //! (`SKEY_HOLD_FILES`, colon-separated paths; the container uses its
 //! `STATUS_SCAN` / `STATUS_WAITING` files). While any of them exists and is
-//! younger than [`HOLD_MAX_AGE`], the keepalive skips the refresh. An older
-//! file was left behind by a crash and is ignored.
+//! younger than [`HOLD_MAX_AGE`], the keepalive holds the refresh back and
+//! looks again every [`crate::daemon::HOLD_RECHECK`]. An older file was left
+//! behind by a crash and is ignored.
+//!
+//! A hold never costs the registration (issue #14): the refresh goes out
+//! anyway when the lease is about to run out or when the device no longer
+//! lists the registration, see [`crate::daemon::keepalive_once`].
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;

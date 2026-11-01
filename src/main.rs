@@ -13,10 +13,13 @@
 //! The logic lives in the library (`daemon.rs`); this file is the loops:
 //! threads are independent, the keepalive never blocks on a scan, and each
 //! scan runs in its own thread, so a long scan cannot delay re-registration.
+//!
+//! The keepalive log is quiet in the steady state: a line is printed when the
+//! outcome differs from the previous one (every cycle with `SKEY_DEBUG`).
 
 use openskey::button::ButtonEvent;
 use openskey::config::Config;
-use openskey::daemon::{self, Decision, Dedup, Keepalive};
+use openskey::daemon::{self, Decision, Dedup};
 use openskey::hold;
 use std::io;
 use std::net::UdpSocket;
@@ -93,7 +96,7 @@ fn run_daemon() -> i32 {
     // Keepalive thread: register now, then re-register before each lease lapses.
     {
         let cfg = cfg.clone();
-        thread::spawn(move || keepalive_loop(&cfg));
+        thread::spawn(move || keepalive_loop(&cfg, debug));
     }
 
     let deadline = run_seconds.map(|s| Instant::now() + Duration::from_secs(s));
@@ -105,12 +108,14 @@ fn run_daemon() -> i32 {
     0
 }
 
-fn keepalive_loop(cfg: &Config) {
+fn keepalive_loop(cfg: &Config, debug: bool) {
     let verify = daemon::selftest_enabled_from(std::env::var("SKEY_SELFTEST").ok().as_deref());
     let holds = hold::hold_files_from_env();
     if !holds.is_empty() {
         println!(
-            "openskey: registration refresh is held back while any of these is fresh: {}",
+            "openskey: registration refresh is held back while any of these is fresh \
+             (looked at every {}s; never past the lease or a dropped registration): {}",
+            daemon::HOLD_RECHECK.as_secs(),
             holds
                 .iter()
                 .map(|p| p.display().to_string())
@@ -118,16 +123,39 @@ fn keepalive_loop(cfg: &Config) {
                 .join(", ")
         );
     }
+    println!("openskey: keepalive logs changes of its outcome only (every cycle with SKEY_DEBUG)");
+    let interval = Duration::from_secs(u64::from(cfg.keepalive_interval.max(1)));
+    let mut registered_at: Option<Instant> = None;
+    let mut held_since: Option<Instant> = None;
+    let mut last_line = String::new();
     loop {
-        let outcome = daemon::keepalive_once(cfg, verify, &holds);
-        let line = daemon::describe_keepalive(cfg, &outcome);
-        match outcome {
-            Keepalive::Failed(_) | Keepalive::Registered(Some(false)) => eprintln!("{line}"),
-            _ => println!("{line}"),
+        let outcome =
+            daemon::keepalive_once(cfg, verify, &holds, registered_at.map(|t| t.elapsed()));
+        if outcome.sent() {
+            registered_at = Some(Instant::now());
         }
-        thread::sleep(Duration::from_secs(u64::from(
-            cfg.keepalive_interval.max(1),
-        )));
+        if outcome.under_hold() {
+            held_since.get_or_insert_with(Instant::now);
+        } else if let Some(since) = held_since.take() {
+            println!(
+                "openskey: scan over, the registration refresh was held back for {}s",
+                since.elapsed().as_secs()
+            );
+        }
+        let line = daemon::describe_keepalive(cfg, &outcome);
+        if debug || line != last_line {
+            if outcome.is_warning() {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+        }
+        last_line = line;
+        thread::sleep(if outcome.under_hold() {
+            daemon::HOLD_RECHECK
+        } else {
+            interval
+        });
     }
 }
 
