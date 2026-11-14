@@ -141,6 +141,10 @@ pub fn event_env(ev: &ButtonEvent) -> Vec<(String, String)> {
             ev.appnum.unwrap_or_else(|| func.appnum()).to_string(),
         ));
     }
+    if !ev.user.is_empty() {
+        // the PC name picked on the panel (several with SKEY_NAMES)
+        env.push(("SKEY_USER".into(), ev.user.clone()));
+    }
     env.push(("SKEY_PARAMS".into(), ev.raw.clone()));
     env.push(("SKEY_EVENT".into(), ev.to_json()));
     for (i, p) in ev.params.iter().enumerate() {
@@ -164,11 +168,28 @@ pub fn event_env(ev: &ButtonEvent) -> Vec<(String, String)> {
 /// argument.
 pub const DEVICE_ARG: &str = "brother4:net1;dev0";
 
+/// The registered PC name an event is for.
+///
+/// With one name every event is for it (as before; the device may spell a
+/// non-ASCII name differently). With several (`SKEY_NAMES`) the event's
+/// `USER` must be one of them; `None` means "not ours": a stale registration
+/// of an earlier name, or another host's entry.
+#[must_use]
+pub fn target_name<'a>(cfg: &'a Config, ev: &ButtonEvent) -> Option<&'a str> {
+    if cfg.names.len() <= 1 {
+        return Some(cfg.name.as_str());
+    }
+    cfg.names
+        .iter()
+        .find(|n| **n == ev.user)
+        .map(String::as_str)
+}
+
 /// Run the configured command for the event and wait for it.
 ///
 /// The command runs as `sh -c <command> -- <device> <name>` with the event in
-/// the environment (see [`event_env`]). Returns the function name and the
-/// exit status.
+/// the environment (see [`event_env`]); `<name>` is the PC name picked on the
+/// panel ([`target_name`]). Returns the function name and the exit status.
 ///
 /// # Errors
 ///
@@ -176,6 +197,12 @@ pub const DEVICE_ARG: &str = "brother4:net1;dev0";
 /// the command could not be started; the message says which.
 pub fn run_command(cfg: &Config, ev: &ButtonEvent) -> Result<(String, ExitStatus), String> {
     let func = ev.func.ok_or("event without a known FUNC, ignored")?;
+    let name = target_name(cfg, ev).ok_or_else(|| {
+        format!(
+            "event for {:?}, which is not one of SKEY_NAMES, ignored",
+            ev.user
+        )
+    })?;
     let command = cfg
         .commands
         .get(func.name())
@@ -186,7 +213,7 @@ pub fn run_command(cfg: &Config, ev: &ButtonEvent) -> Result<(String, ExitStatus
         .arg(command)
         .arg("--")
         .arg(DEVICE_ARG)
-        .arg(&cfg.name);
+        .arg(name);
     for (k, v) in event_env(ev) {
         child.env(k, v);
     }
@@ -316,7 +343,7 @@ fn refresh(cfg: &Config, verify: bool, forced: Option<(PathBuf, Override)>) -> K
 
 /// "registered Scan-to-PC for ..., <how the self-test went>".
 fn registered_text(cfg: &Config, verified: Option<bool>) -> String {
-    let name = &cfg.name;
+    let name = cfg.names.join(", ");
     match verified {
         Some(true) => format!("registered Scan-to-PC for {name:?}, registration verified"),
         Some(false) => {
@@ -523,6 +550,52 @@ mod tests {
         });
         let (_, status) = run_command(&cfg, &ev).unwrap();
         assert_eq!(status.code(), Some(3));
+    }
+
+    #[test]
+    fn several_names_pass_the_picked_one_and_ignore_others() {
+        let out = std::env::temp_dir().join(format!("openskey-names-{}", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let command = format!("printf '%s|%s' \"$2\" \"$SKEY_USER\" > {}", out.display());
+        let cfg = Config::from_lookup(move |k| match k {
+            "SKEY_FILE" => Some(command.clone()),
+            "SKEY_NAMES" => Some("Other,Scanner".into()),
+            _ => None,
+        });
+        // the mock device's event is for USER="Scanner", the second name
+        let ev = button::parse(&button_datagram(Function::File, [0; 4])).unwrap();
+        assert_eq!(target_name(&cfg, &ev), Some("Scanner"));
+        let (_, status) = run_command(&cfg, &ev).unwrap();
+        assert!(status.success());
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "Scanner|Scanner");
+        let _ = std::fs::remove_file(&out);
+
+        let cfg = Config::from_lookup(|k| match k {
+            "SKEY_NAMES" => Some("PersonA,PersonB".into()),
+            _ => None,
+        });
+        assert_eq!(target_name(&cfg, &ev), None);
+        assert!(run_command(&cfg, &ev)
+            .unwrap_err()
+            .contains("not one of SKEY_NAMES"));
+
+        // one name: every event is for it, whatever USER says
+        let cfg = Config::from_lookup(|k| match k {
+            "NAME" => Some("Elsewhere".into()),
+            _ => None,
+        });
+        assert_eq!(target_name(&cfg, &ev), Some("Elsewhere"));
+    }
+
+    #[test]
+    fn several_names_register_one_packet_each() {
+        let server = MockServer::start(false).unwrap();
+        let mut cfg = cfg_for(server.port, "10.0.0.2");
+        cfg.names = vec!["PersonA".into(), "PersonB".into()];
+        crate::registration::register_once(&cfg).unwrap();
+        let state = server.stop();
+        assert!(state.registered);
+        assert_eq!(state.requests, 2, "one registration per name");
     }
 
     #[test]

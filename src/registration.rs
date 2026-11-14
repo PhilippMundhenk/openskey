@@ -21,10 +21,9 @@ pub const REQUEST_ID: i64 = 201;
 /// The registration value string for one function, e.g.
 /// `TYPE=BR;BUTTON=SCAN;USER="Scanner";FUNC=IMAGE;HOST=10.0.30.10:54925;APPNUM=1;DURATION=360;BRID=;`
 #[must_use]
-pub fn registration_string(cfg: &Config, func: Function) -> String {
+pub fn registration_string(cfg: &Config, user: &str, func: Function) -> String {
     format!(
         "TYPE=BR;BUTTON=SCAN;USER=\"{user}\";FUNC={func};HOST={host}:{port};APPNUM={appnum};DURATION={duration};BRID=;",
-        user = cfg.name,
         func = func.name(),
         host = cfg.host_ip,
         port = cfg.listen_port,
@@ -33,13 +32,14 @@ pub fn registration_string(cfg: &Config, func: Function) -> String {
     )
 }
 
-/// The full `SNMPv1` set-request packet that registers all four functions.
+/// The full `SNMPv1` set-request packet that registers all four functions
+/// under one PC name (one packet per name, as the stock daemon sends it).
 #[must_use]
-pub fn build_registration(cfg: &Config) -> Vec<u8> {
+pub fn build_registration(cfg: &Config, user: &str) -> Vec<u8> {
     let varbinds: Vec<Vec<u8>> = Function::all()
         .iter()
         .map(|&f| {
-            let value = snmp::octet_string(registration_string(cfg, f).as_bytes());
+            let value = snmp::octet_string(registration_string(cfg, user, f).as_bytes());
             snmp::varbind(&REG_OID, &value)
         })
         .collect();
@@ -71,13 +71,15 @@ pub fn register_once(cfg: &Config) -> io::Result<()> {
             "HOST_IPADDRESS is not set; the device could not reach us",
         ));
     }
-    let packet = build_registration(cfg);
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
-    socket.send_to(&packet, (cfg.device_ip.as_str(), cfg.device_port))?;
-    // Read and discard the get-response if it comes; ignore a timeout.
     let mut buf = [0u8; 2048];
-    let _ = socket.recv_from(&mut buf);
+    for user in &cfg.names {
+        let packet = build_registration(cfg, user);
+        socket.send_to(&packet, (cfg.device_ip.as_str(), cfg.device_port))?;
+        // Read and discard the get-response if it comes; ignore a timeout.
+        let _ = socket.recv_from(&mut buf);
+    }
     Ok(())
     // `socket` is dropped here -> closed. No accumulation across calls.
 }
@@ -99,6 +101,7 @@ mod tests {
             keepalive_interval: 120,
             listen_port: 54925,
             commands: BTreeMap::new(),
+            names: vec!["NAS".into()],
         }
     }
 
@@ -106,11 +109,11 @@ mod tests {
     fn registration_string_matches_capture() {
         let c = cfg();
         assert_eq!(
-            registration_string(&c, Function::Image),
+            registration_string(&c, "NAS", Function::Image),
             "TYPE=BR;BUTTON=SCAN;USER=\"NAS\";FUNC=IMAGE;HOST=10.0.30.10:54925;APPNUM=1;DURATION=360;BRID=;"
         );
         assert_eq!(
-            registration_string(&c, Function::File),
+            registration_string(&c, "NAS", Function::File),
             "TYPE=BR;BUTTON=SCAN;USER=\"NAS\";FUNC=FILE;HOST=10.0.30.10:54925;APPNUM=5;DURATION=360;BRID=;"
         );
     }
@@ -118,7 +121,7 @@ mod tests {
     #[test]
     fn packet_decodes_to_four_bindings() {
         let c = cfg();
-        let packet = build_registration(&c);
+        let packet = build_registration(&c, "NAS");
         let vbs = snmp::extract_string_varbinds(&packet);
         assert_eq!(vbs.len(), 4);
         for (oid, _) in &vbs {

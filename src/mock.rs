@@ -335,7 +335,7 @@ mod tests {
             "HOST_IPADDRESS" => Some("10.0.0.2".into()),
             _ => None,
         });
-        let packet = registration::build_registration(&cfg);
+        let packet = registration::build_registration(&cfg, &cfg.name);
         let mut state = MockState::default();
         let (handled, response) = handle(&packet, &mut state);
         assert!(state.registered);

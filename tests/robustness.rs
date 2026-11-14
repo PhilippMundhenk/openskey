@@ -75,7 +75,7 @@ fn mutated_real_messages_never_panic() {
         _ => None,
     });
     let originals = [
-        openskey::registration::build_registration(&cfg),
+        openskey::registration::build_registration(&cfg, &cfg.name),
         mock::button_datagram(Function::File, [3, 1, 0, 2]),
         snmp::get_request(
             "internal",

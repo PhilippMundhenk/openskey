@@ -57,6 +57,14 @@ Fields:
 
 The device replies with an SNMP `get-response` echoing the bindings.
 
+### Several names from one host
+
+The device keeps a list of Scan-to-PC hosts and shows every registered `USER`
+on the panel. Several registrations from the same `HOST` with different
+`USER` values (one set-request each) are all listed side by side (seen on an
+MFC-L2710DW, firmware ZF), and the button event's `USER` says which one was
+picked. openskey uses this for `SKEY_NAMES`.
+
 ### Keeping it alive
 
 The device does **not** renew on its own and `brscan-skey` only re-registers on

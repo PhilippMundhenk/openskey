@@ -61,9 +61,10 @@ are deliberately not exposed.
 | Model        | Firmware      | Registration | Buttons | Status |
 | ------------ | ------------- | ------------ | ------- | ------ |
 | MFC-L2700DW  | Y2309112149   | SNMP, works  | work    | works  |
+| MFC-L2710DW  | ZF            | SNMP, works  | work    | works; several names (`SKEY_NAMES`) from one host are all listed |
 
 Other Brother devices that register over SNMP very likely work the same way,
-but only this one has been seen on the wire. Newer firmware registers over
+but only these have been seen on the wire. Newer firmware registers over
 HTTP instead, which openskey does not implement yet (#17). If you have another
 model, please open a
 [model report](https://github.com/PhilippMundhenk/openskey/issues/new?template=model-report.yml)
@@ -172,6 +173,7 @@ Configuration is by environment variable, compatible with the container:
 | Var                 | Meaning                                              | Default   |
 | ------------------- | ---------------------------------------------------- | --------- |
 | `NAME`              | PC name shown on the panel                           | `Scanner` |
+| `SKEY_NAMES`        | several PC names, comma-separated, each its own entry on the panel (e.g. one per person); replaces `NAME`. Events for a name not in the list are ignored, and the script's `<name>` and `SKEY_USER` say which one was picked | `NAME` |
 | `IPADDRESS`         | the scanner's IP (registration target)               | required  |
 | `HOST_IPADDRESS`    | this host's IP the device sends button events to     | required  |
 | `KEEPALIVE_INTERVAL`| seconds between re-registrations (< 360)              | `120`     |
@@ -186,13 +188,18 @@ Configuration is by environment variable, compatible with the container:
 | `SKEY_IMAGE` / `SKEY_OCR` / `SKEY_EMAIL` / `SKEY_FILE` | command per function   | container script paths |
 
 The command runs as `sh -c "<command>" -- <device> <name>` (the two positional
-arguments the stock daemon passes) with the event in its environment:
-`SKEY_FUNC`, `SKEY_APPNUM`, `SKEY_P1`..`SKEY_P4`, `SKEY_REGID`, `SKEY_SEQ`,
+arguments the stock daemon passes; `<name>` is the PC name picked on the panel)
+with the event in its environment: `SKEY_USER` (the picked name as the device
+sent it), `SKEY_FUNC`, `SKEY_APPNUM`, `SKEY_P1`..`SKEY_P4`, `SKEY_REGID`, `SKEY_SEQ`,
 `SKEY_CLIENT`, the raw token string `SKEY_PARAMS` and the JSON `SKEY_EVENT`.
 
 ```sh
 IPADDRESS=192.168.1.50 HOST_IPADDRESS=192.168.1.10 NAME=Scanner ./target/release/openskey
 ```
+
+Names go into the registration record as `USER="<name>"`, so a name with `"`,
+`;` or a control character is refused (it could add fields of its own):
+`NAME` falls back to `Scanner`, a `SKEY_NAMES` entry is skipped.
 
 ## Run as a systemd service
 

@@ -93,6 +93,44 @@ pub struct Config {
     pub listen_port: u16,
     /// Command to run for each enabled function (shell command line).
     pub commands: BTreeMap<&'static str, String>,
+    /// Every PC name registered on the panel: `SKEY_NAMES` (comma-separated),
+    /// else just `name`. Several names let several people pick their own
+    /// entry; the event says which one was chosen (`USER`).
+    pub names: Vec<String>,
+}
+
+/// Whether a PC name can go into the registration string as it is.
+///
+/// The name is written into `USER="<name>"` of a `;`-separated record, so a
+/// `"` or `;` (or a control character) would let it end the field and add
+/// fields of its own. Such names are refused rather than escaped: the
+/// device's parsing of escapes is unknown.
+#[must_use]
+pub fn valid_name(name: &str) -> bool {
+    !name.is_empty() && !name.chars().any(|c| c == '"' || c == ';' || c.is_control())
+}
+
+/// The names from a comma-separated `SKEY_NAMES` value: trimmed, invalid and
+/// repeated entries dropped (with a warning on stderr), in the given order.
+#[must_use]
+pub fn parse_names(spec: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for raw in spec.split(',') {
+        let name = raw.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !valid_name(name) {
+            eprintln!("openskey: SKEY_NAMES: ignoring invalid name {name:?} (no '\"', ';' or control characters)");
+            continue;
+        }
+        if names.iter().any(|n| n == name) {
+            eprintln!("openskey: SKEY_NAMES: ignoring repeated name {name:?}");
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names
 }
 
 impl Config {
@@ -133,8 +171,22 @@ impl Config {
             env_or("SKEY_FILE", &format!("{base}/scantofile.py")),
         );
 
+        let mut name = env_or("NAME", "Scanner");
+        if !valid_name(&name) {
+            eprintln!("openskey: NAME {name:?} contains '\"', ';' or a control character, using \"Scanner\"");
+            name = "Scanner".to_string();
+        }
+        let mut names = parse_names(&env_or("SKEY_NAMES", ""));
+        if names.is_empty() {
+            names.push(name.clone());
+        } else {
+            // the first listed name stands for the daemon (logs, script argument)
+            name.clone_from(&names[0]);
+        }
+
         Self {
-            name: env_or("NAME", "Scanner"),
+            name,
+            names,
             device_ip: env_or("IPADDRESS", ""),
             device_port,
             host_ip: env_or("HOST_IPADDRESS", ""),
@@ -166,6 +218,37 @@ mod tests {
         assert_eq!(Function::from_name("Email"), Some(Function::Email));
         assert_eq!(Function::from_name("image"), Some(Function::Image));
         assert_eq!(Function::from_name("fax"), None);
+    }
+
+    #[test]
+    fn several_names_from_skey_names() {
+        let cfg = Config::from_lookup(|key| match key {
+            "NAME" => Some("Ignored".into()),
+            "SKEY_NAMES" => Some(" PersonA, PersonB ,,PersonA".into()),
+            _ => None,
+        });
+        assert_eq!(
+            cfg.names,
+            vec!["PersonA".to_string(), "PersonB".to_string()]
+        );
+        assert_eq!(cfg.name, "PersonA");
+    }
+
+    #[test]
+    fn names_that_could_inject_fields_are_refused() {
+        assert!(valid_name("Scanner"));
+        assert!(valid_name("Büro 2"));
+        assert!(!valid_name(""));
+        assert!(!valid_name("x\";FUNC=OCR"));
+        assert!(!valid_name("a;b"));
+        assert!(!valid_name("a\nb"));
+        assert_eq!(parse_names("ok,bad\"name,also;bad"), vec!["ok".to_string()]);
+        let cfg = Config::from_lookup(|key| match key {
+            "NAME" => Some("evil\";HOST=1.2.3.4:1;".into()),
+            _ => None,
+        });
+        assert_eq!(cfg.name, "Scanner");
+        assert_eq!(cfg.names, vec!["Scanner".to_string()]);
     }
 
     #[test]

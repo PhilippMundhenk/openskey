@@ -71,7 +71,7 @@ fn run_daemon() -> i32 {
     let debug = daemon::debug_enabled_from(std::env::var("SKEY_DEBUG").ok().as_deref());
     println!(
         "openskey starting: name={:?} device={}:{} host={} listen=:{} keepalive={}s duration={}s",
-        cfg.name,
+        cfg.names.join(", "),
         cfg.device_ip,
         cfg.device_port,
         cfg.host_ip,
@@ -220,8 +220,9 @@ fn listen_loop(cfg: &Config, socket: &UdpSocket, debug: bool, deadline: Option<I
 
 fn log_button(ev: &ButtonEvent, datagram: &[u8], from: &str, debug: bool) {
     println!(
-        "openskey: button from {from}: header[{}] FUNC={:?} APPNUM={:?} P={:?} SEQ={:?}",
+        "openskey: button from {from}: header[{}] USER={:?} FUNC={:?} APPNUM={:?} P={:?} SEQ={:?}",
         daemon::header_hex(datagram),
+        ev.user,
         ev.func,
         ev.appnum,
         ev.params,
